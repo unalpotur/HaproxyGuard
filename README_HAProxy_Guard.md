@@ -90,5 +90,22 @@ Deployment:
 - Docker
 - Docker Compose
 
+## Development
+
+Backend (FastAPI, port 8000):
+```bash
+cd backend
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/uvicorn app.main:app --reload
+.venv/bin/pytest            # run tests
+```
+
+Frontend (Vite dev server, port 5173, proxies /api to the backend):
+```bash
+cd frontend
+npm install
+npm run dev                 # set HG_API_URL to override the API target
+```
+
 ## License
 Apache 2.0
