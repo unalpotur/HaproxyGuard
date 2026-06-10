@@ -78,3 +78,20 @@ main { display: flex; flex: 1; min-height: 0; }
 .finding .suggestion { color: #a5b4fc; }
 .finding code { color: #64748b; font-size: 12px; }
 .finding small { color: #64748b; }
+
+.dashboard { padding: 16px; }
+.dash-status { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.dash-status small { color: #64748b; }
+.error-inline { color: #f87171; font-size: 13px; }
+
+.dashboard table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.dashboard th {
+  text-align: left;
+  color: #94a3b8;
+  font-weight: 500;
+  padding: 6px 10px;
+  border-bottom: 1px solid #334155;
+}
+.dashboard td { padding: 6px 10px; border-bottom: 1px solid #1e293b; }
+.dashboard td.warn { color: #f87171; font-weight: 600; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }

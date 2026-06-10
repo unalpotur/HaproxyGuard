@@ -6,7 +6,10 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/api': process.env.HG_API_URL ?? 'http://localhost:8000',
+      '/api': {
+        target: process.env.HG_API_URL ?? 'http://localhost:8000',
+        ws: true,
+      },
     },
   },
 })

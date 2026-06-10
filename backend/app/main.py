@@ -1,14 +1,36 @@
-from fastapi import FastAPI
+import os
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from .parser.parser import parse_config
 from .parser.models import HaproxyConfig
 from .analyzer.rules import analyze, Finding
+from .metrics.client import StatsClientError, StatsSocketClient
+from .metrics.collector import MetricsCollector
+
+collector: MetricsCollector | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global collector
+    stats_addr = os.environ.get("HAPROXY_STATS_ADDR")
+    if stats_addr:
+        interval = float(os.environ.get("HG_METRICS_INTERVAL", "2"))
+        collector = MetricsCollector(StatsSocketClient(stats_addr), interval=interval)
+        collector.start()
+    yield
+    if collector:
+        await collector.stop()
+
 
 app = FastAPI(
     title="HAProxy Guard API",
     version="0.1.0",
     description="Parse, analyze and manage HAProxy configurations.",
+    lifespan=lifespan,
 )
 
 
@@ -64,3 +86,52 @@ def topology(body: ConfigInput) -> dict:
                           "address": f"{s.address}:{s.port}", "check": s.check})
             edges.append({"source": be_id, "target": srv_id, "label": ""})
     return {"nodes": nodes, "edges": edges}
+
+
+def _require_collector() -> MetricsCollector:
+    if collector is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Metrics not configured: set HAPROXY_STATS_ADDR (e.g. 127.0.0.1:9999 or /run/haproxy.sock).",
+        )
+    return collector
+
+
+@app.get("/api/metrics/snapshot")
+async def metrics_snapshot() -> dict:
+    c = _require_collector()
+    return c.latest or await c.collect_once()
+
+
+@app.get("/api/metrics/history")
+def metrics_history(limit: int = 300) -> dict:
+    c = _require_collector()
+    return {"snapshots": list(c.history)[-limit:]}
+
+
+@app.get("/api/metrics/info")
+async def haproxy_info() -> dict:
+    c = _require_collector()
+    try:
+        return await c.client.show_info()
+    except StatsClientError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.websocket("/api/ws/metrics")
+async def metrics_ws(ws: WebSocket) -> None:
+    await ws.accept()
+    if collector is None:
+        await ws.send_json({"ok": False, "error": "HAPROXY_STATS_ADDR not configured"})
+        await ws.close(code=1011)
+        return
+    queue = collector.subscribe()
+    try:
+        if collector.latest:
+            await ws.send_json(collector.latest)
+        while True:
+            await ws.send_json(await queue.get())
+    except WebSocketDisconnect:
+        pass
+    finally:
+        collector.unsubscribe(queue)

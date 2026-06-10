@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 import { fetchAnalysis, fetchTopology, type AnalysisResult, type TopologyGraph } from './api'
 import TopologyView from './TopologyView'
 import FindingsPanel from './FindingsPanel'
+import Dashboard from './Dashboard'
 import './App.css'
 
 const SAMPLE = `frontend web
@@ -21,7 +22,7 @@ backend api_servers
     server api1 10.0.1.11:9000 check
 `
 
-type Tab = 'topology' | 'findings'
+type Tab = 'topology' | 'findings' | 'dashboard'
 
 export default function App() {
   const [config, setConfig] = useState(SAMPLE)
@@ -72,11 +73,15 @@ export default function App() {
             <button className={tab === 'findings' ? 'active' : ''} onClick={() => setTab('findings')}>
               Findings{analysis ? ` (${issueCount})` : ''}
             </button>
+            <button className={tab === 'dashboard' ? 'active' : ''} onClick={() => setTab('dashboard')}>
+              Dashboard
+            </button>
           </nav>
           <div className="panel">
             {error && <p className="error">{error}</p>}
             {!error && tab === 'topology' && (graph ? <TopologyView graph={graph} /> : <p className="empty">Click “Parse &amp; Analyze” to render the topology.</p>)}
             {!error && tab === 'findings' && (analysis ? <FindingsPanel result={analysis} /> : <p className="empty">No analysis yet.</p>)}
+            {!error && tab === 'dashboard' && <Dashboard />}
           </div>
         </section>
       </main>

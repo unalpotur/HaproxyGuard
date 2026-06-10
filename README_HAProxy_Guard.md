@@ -107,5 +107,13 @@ npm install
 npm run dev                 # set HG_API_URL to override the API target
 ```
 
+Live dashboard (dev HAProxy + echo backends in Docker):
+```bash
+docker compose --profile dev up -d haproxy echo1 echo2
+HAPROXY_STATS_ADDR=127.0.0.1:9999 .venv/bin/uvicorn app.main:app   # from backend/
+curl localhost:18080/        # generate some traffic
+```
+The Dashboard tab streams `show stat` snapshots over `/api/ws/metrics`.
+
 ## License
 Apache 2.0

@@ -4,12 +4,32 @@ services:
       context: .
       dockerfile: docker/backend.Dockerfile
     ports:
-      - "8000:8000"
+      - "${HG_API_PORT:-8000}:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
+
+  # Dev-only HAProxy + echo backends, for the live Dashboard:
+  #   docker compose --profile dev up haproxy echo1 echo2
+  #   then run the API with HAPROXY_STATS_ADDR=127.0.0.1:9999
+  haproxy:
+    image: haproxy:2.9-alpine
+    profiles: [dev]
+    volumes:
+      - ./docker/dev-haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    ports:
+      - "18080:8080"  # proxied traffic
+      - "9999:9999"   # runtime API (dev only)
+    depends_on: [echo1, echo2]
+
+  echo1:
+    image: ealen/echo-server
+    profiles: [dev]
+  echo2:
+    image: ealen/echo-server
+    profiles: [dev]
 
   # PostgreSQL will be wired in when persistence lands (Phase 3 historical metrics)
   # db:
