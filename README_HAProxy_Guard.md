@@ -90,6 +90,30 @@ Deployment:
 - Docker
 - Docker Compose
 
+## Quick start (Docker)
+
+The whole platform — API + web UI — runs with one command:
+
+```bash
+docker compose up --build
+```
+
+Then open **http://localhost:8080** (the nginx-served React UI; it proxies `/api`
+and the metrics WebSocket to the API container). The API is also exposed directly
+on http://localhost:8000.
+
+Optional environment variables (a `.env` file next to `docker-compose.yml` works):
+
+| Variable | Effect |
+|---|---|
+| `ANTHROPIC_API_KEY` | Enables the AI Assistant's written narrative (otherwise heuristic-only) |
+| `HG_ADMIN_KEY` | Bootstraps an admin principal and switches RBAC into enforcing mode |
+| `HAPROXY_STATS_ADDR` | Runtime stats socket for the live Dashboard (e.g. `127.0.0.1:9999`) |
+| `HG_WEB_PORT` / `HG_API_PORT` | Override the host ports (default 8080 / 8000) |
+
+The API image bundles the `haproxy` binary, so `haproxy -c` validation (auto-fix
+and cluster deploys) runs for real inside the container.
+
 ## Development
 
 Backend (FastAPI, port 8000):

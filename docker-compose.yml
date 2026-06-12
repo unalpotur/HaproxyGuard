@@ -5,11 +5,27 @@ services:
       dockerfile: docker/backend.Dockerfile
     ports:
       - "${HG_API_PORT:-8000}:8000"
+    environment:
+      # Optional: enable the AI assistant narrative and RBAC enforcement.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      HG_ADMIN_KEY: ${HG_ADMIN_KEY:-}
+      # Optional: point the live Dashboard at a runtime stats socket.
+      HAPROXY_STATS_ADDR: ${HAPROXY_STATS_ADDR:-}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
+
+  # React UI served by nginx; proxies /api (and the metrics WebSocket) to api.
+  web:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    ports:
+      - "${HG_WEB_PORT:-8080}:80"
+    depends_on:
+      - api
 
   # Dev-only HAProxy + echo backends, for the live Dashboard:
   #   docker compose --profile dev up haproxy echo1 echo2
