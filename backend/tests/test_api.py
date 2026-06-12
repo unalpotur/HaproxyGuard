@@ -210,3 +210,20 @@ def test_alerts_channel_crud_and_dispatch():
 
     assert client.delete(f"/api/alerts/channels/{cid}").status_code == 200
     assert client.delete(f"/api/alerts/channels/{cid}").status_code == 404
+
+
+def test_whoami_open_mode_is_anonymous_admin():
+    # No principals configured in tests ⇒ open mode ⇒ anonymous admin
+    r = client.get("/api/auth/whoami")
+    assert r.status_code == 200
+    assert r.json()["role"] == "admin"
+
+
+def test_mutating_action_is_audited():
+    # Enrolling a node is an operator action; it must appear in the audit log.
+    client.post("/api/cluster/nodes", json={"name": "audited-node", "address": "10.9.9.9"})
+    audit = client.get("/api/audit").json()
+    assert any(e["action"] == "cluster.enroll" and e["target"] == "audited-node"
+               for e in audit)
+    # audit entries are newest-first and carry the actor
+    assert audit[0]["actor"] == "anonymous"

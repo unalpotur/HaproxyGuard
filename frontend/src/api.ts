@@ -268,6 +268,22 @@ export interface DispatchResult {
   results: ChannelSendResult[]
 }
 
+export interface Principal {
+  name: string
+  role: 'viewer' | 'operator' | 'admin'
+}
+
+export interface AuditEntry {
+  id: number
+  actor: string
+  role: string
+  action: string
+  target: string | null
+  status: string
+  detail: string
+  created_at: string
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
@@ -367,6 +383,18 @@ export const addAlertChannel = (name: string, type: string, url: string, min_sev
 export const removeAlertChannel = async (id: string): Promise<void> => {
   const res = await fetch(`/api/alerts/channels/${id}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`delete failed: ${res.status}`)
+}
+
+export const whoami = async (): Promise<Principal> => {
+  const res = await fetch('/api/auth/whoami')
+  if (!res.ok) throw new Error(`/api/auth/whoami failed: ${res.status}`)
+  return res.json()
+}
+
+export const auditLog = async (limit = 200): Promise<AuditEntry[]> => {
+  const res = await fetch(`/api/audit?limit=${limit}`)
+  if (!res.ok) throw new Error(`/api/audit failed: ${res.status}`)
+  return res.json()
 }
 
 // Simulate an agent check-in from the dashboard (dev/demo aid).

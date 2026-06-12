@@ -1,7 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from .parser.parser import parse_config
@@ -13,6 +13,7 @@ from . import security as sec
 from . import assistant as ai
 from . import cluster as cl
 from . import alerts as al
+from . import authz
 from .metrics.client import StatsClientError, StatsSocketClient
 from .metrics.collector import MetricsCollector
 
@@ -20,6 +21,32 @@ collector: MetricsCollector | None = None
 fix_engine = FixEngine()
 registry = cl.ClusterRegistry()
 channels = al.ChannelRegistry()
+principals = authz.PrincipalRegistry()
+audit = authz.AuditLog()
+
+# Bootstrap an admin principal from the environment, enabling RBAC enforcement.
+_admin_key = os.environ.get("HG_ADMIN_KEY")
+if _admin_key:
+    principals.add_with_token("admin", "admin", _admin_key)
+
+
+def current_principal(x_api_key: str | None = Header(default=None)) -> authz.Principal:
+    """Resolve the caller. Open mode (no principals configured) ⇒ anonymous admin."""
+    if principals.is_open():
+        return authz.Principal(name="anonymous", role="admin")
+    p = principals.authenticate(x_api_key or "")
+    if p is None:
+        raise HTTPException(status_code=401, detail="Missing or invalid X-API-Key")
+    return p
+
+
+def require(principal: authz.Principal, role: str, action: str, target: str | None = None):
+    """Enforce a minimum role, recording the outcome in the audit log."""
+    if not authz.has_at_least(principal.role, role):
+        audit.append(principal.name, principal.role, action, target, status="denied",
+                     detail=f"requires {role}")
+        raise HTTPException(status_code=403, detail=f"Requires '{role}' role")
+    audit.append(principal.name, principal.role, action, target)
 
 
 @asynccontextmanager
@@ -186,6 +213,44 @@ def assistant_analyze(body: AssistantInput) -> ai.AssistantReport:
         body.content, logs_text=body.logs, metrics=metrics, use_llm=body.use_llm)
 
 
+# --- Auth & audit (RBAC) ------------------------------------------------
+
+@app.get("/api/auth/whoami", response_model=authz.Principal)
+def whoami(principal: authz.Principal = Depends(current_principal)) -> authz.Principal:
+    return principal
+
+
+@app.get("/api/auth/principals", response_model=list[authz.Principal])
+def list_principals(principal: authz.Principal = Depends(current_principal)) -> list[authz.Principal]:
+    require(principal, "admin", "auth.list_principals")
+    return principals.list()
+
+
+@app.post("/api/auth/principals", response_model=authz.PrincipalCreated)
+def create_principal(body: authz.PrincipalInput,
+                     principal: authz.Principal = Depends(current_principal)) -> authz.PrincipalCreated:
+    require(principal, "admin", "auth.create_principal", body.name)
+    try:
+        return principals.add(body.name, body.role)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/auth/principals/{name}")
+def delete_principal(name: str, principal: authz.Principal = Depends(current_principal)) -> dict:
+    require(principal, "admin", "auth.delete_principal", name)
+    if not principals.remove(name):
+        raise HTTPException(status_code=404, detail="Unknown principal")
+    return {"removed": name}
+
+
+@app.get("/api/audit", response_model=list[authz.AuditEntry])
+def get_audit(limit: int = 200,
+              principal: authz.Principal = Depends(current_principal)) -> list[authz.AuditEntry]:
+    require(principal, "operator", "audit.read")
+    return audit.list(limit)
+
+
 # --- Alerting -----------------------------------------------------------
 
 def _evaluate_alerts(body: al.EvaluateInput) -> list[al.Alert]:
@@ -201,8 +266,10 @@ def alerts_evaluate(body: al.EvaluateInput) -> list[al.Alert]:
 
 
 @app.post("/api/alerts/dispatch", response_model=al.DispatchResult)
-def alerts_dispatch(body: al.EvaluateInput) -> al.DispatchResult:
+def alerts_dispatch(body: al.EvaluateInput,
+                    principal: authz.Principal = Depends(current_principal)) -> al.DispatchResult:
     """Evaluate and send the alerts to every configured channel."""
+    require(principal, "operator", "alerts.dispatch")
     found = _evaluate_alerts(body)
     return al.DispatchResult(alerts=found, results=channels.dispatch(found))
 
@@ -213,12 +280,16 @@ def alerts_channels() -> list[al.AlertChannel]:
 
 
 @app.post("/api/alerts/channels", response_model=al.AlertChannel)
-def alerts_add_channel(body: al.ChannelInput) -> al.AlertChannel:
+def alerts_add_channel(body: al.ChannelInput,
+                       principal: authz.Principal = Depends(current_principal)) -> al.AlertChannel:
+    require(principal, "operator", "alerts.add_channel", body.name)
     return channels.add(body)
 
 
 @app.delete("/api/alerts/channels/{channel_id}")
-def alerts_remove_channel(channel_id: str) -> dict:
+def alerts_remove_channel(channel_id: str,
+                          principal: authz.Principal = Depends(current_principal)) -> dict:
+    require(principal, "operator", "alerts.remove_channel", channel_id)
     if not channels.remove(channel_id):
         raise HTTPException(status_code=404, detail="Unknown channel")
     return {"removed": channel_id}
@@ -227,8 +298,10 @@ def alerts_remove_channel(channel_id: str) -> dict:
 # --- Multi-node cluster: control plane (dashboard) ----------------------
 
 @app.post("/api/cluster/nodes", response_model=cl.EnrollResponse)
-def cluster_enroll(body: cl.EnrollInput) -> cl.EnrollResponse:
+def cluster_enroll(body: cl.EnrollInput,
+                   principal: authz.Principal = Depends(current_principal)) -> cl.EnrollResponse:
     """Enroll an HAProxy agent; returns a bearer token shown only once."""
+    require(principal, "operator", "cluster.enroll", body.name)
     return registry.enroll(body.name, body.address, body.labels)
 
 
@@ -251,7 +324,9 @@ def cluster_node(node_id: str) -> cl.Node:
 
 
 @app.delete("/api/cluster/nodes/{node_id}")
-def cluster_remove(node_id: str) -> dict:
+def cluster_remove(node_id: str,
+                   principal: authz.Principal = Depends(current_principal)) -> dict:
+    require(principal, "operator", "cluster.remove", node_id)
     if not registry.remove(node_id):
         raise HTTPException(status_code=404, detail="Unknown node")
     return {"removed": node_id}
@@ -265,13 +340,18 @@ def cluster_deployments(node_id: str) -> list[cl.Deployment]:
 
 
 @app.post("/api/cluster/deploy", response_model=cl.DeployResult)
-def cluster_deploy(body: cl.DeployInput) -> cl.DeployResult:
+def cluster_deploy(body: cl.DeployInput,
+                   principal: authz.Principal = Depends(current_principal)) -> cl.DeployResult:
     """Validate and push a config to nodes (by id list or label selector)."""
+    require(principal, "operator", "cluster.deploy",
+            ",".join(body.node_ids) if body.node_ids else str(body.selector))
     return registry.deploy(body.content, body.node_ids, body.selector, body.validate_config)
 
 
 @app.post("/api/cluster/nodes/{node_id}/rollback", response_model=cl.Deployment)
-def cluster_rollback(node_id: str) -> cl.Deployment:
+def cluster_rollback(node_id: str,
+                     principal: authz.Principal = Depends(current_principal)) -> cl.Deployment:
+    require(principal, "operator", "cluster.rollback", node_id)
     if registry.get(node_id) is None:
         raise HTTPException(status_code=404, detail="Unknown node")
     dep = registry.rollback(node_id)

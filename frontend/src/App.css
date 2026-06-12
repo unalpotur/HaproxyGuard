@@ -186,6 +186,15 @@ main { display: flex; flex: 1; min-height: 0; }
 .dispatch-results li.ok { color: #34d399; }
 .dispatch-results li.fail { color: #f87171; }
 .enroll-row select { background: #020617; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 6px 8px; }
+
+/* Audit / RBAC */
+.whoami { color: #cbd5e1; font-size: 14px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.whoami small { color: #94a3b8; }
+.role, .role-mini { color: #fff; border-radius: 4px; padding: 1px 7px; font-size: 11px; text-transform: uppercase; }
+.role.admin, .role-mini { background: #4f46e5; }
+.role.operator { background: #0891b2; }
+.role.viewer { background: #475569; }
+.role-mini { background: #334155; color: #94a3b8; font-size: 10px; padding: 0 5px; }
 .finding small { color: #64748b; }
 
 .dashboard { padding: 16px; }
