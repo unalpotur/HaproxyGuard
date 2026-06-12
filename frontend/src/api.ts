@@ -59,6 +59,57 @@ export interface FixProposal {
   version_id: string | null
 }
 
+export interface CertificateInfo {
+  subject_cn: string
+  issuer_cn: string
+  serial_number: string
+  not_before: string
+  not_after: string
+  days_remaining: number
+  expiry_status: 'expired' | 'critical' | 'warning' | 'ok'
+  sans: string[]
+  key_type: string
+  key_bits: number | null
+  signature_algorithm: string
+  is_self_signed: boolean
+  is_ca: boolean
+  issues: string[]
+}
+
+export interface CertReference {
+  path: string
+  kind: string
+  section: string | null
+  line_number: number | null
+}
+
+export interface CertEntry {
+  reference: CertReference
+  readable: boolean
+  error: string | null
+  certificates: CertificateInfo[]
+}
+
+export interface CipherAssessment {
+  section: string | null
+  bind: string
+  min_version: string | null
+  max_version: string | null
+  ciphers: string | null
+  ciphersuites: string | null
+  alpn: string | null
+  grade: 'A' | 'B' | 'C' | 'F'
+  issues: string[]
+}
+
+export interface SslReport {
+  references: CertReference[]
+  certificates: CertEntry[]
+  ciphers: CipherAssessment[]
+  alerts: string[]
+  summary: Record<string, number>
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
@@ -84,3 +135,9 @@ export const rollbackFix = (version_id: string) =>
   postJson<{ version_id: string; content: string; created_at: string }>(
     '/api/fix/rollback', { version_id },
   )
+
+export const scanSsl = (content: string, read_files = false) =>
+  postJson<SslReport>('/api/ssl/scan', { content, read_files })
+
+export const analyzeCert = (pem: string) =>
+  postJson<CertificateInfo[]>('/api/ssl/analyze-cert', { pem })

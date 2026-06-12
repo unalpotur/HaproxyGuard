@@ -68,3 +68,25 @@ def test_fix_preview_and_apply_and_rollback():
 def test_fix_rollback_unknown_version():
     r = client.post("/api/fix/rollback", json={"version_id": "nope"})
     assert r.status_code == 404
+
+
+def test_ssl_analyze_cert_endpoint():
+    from tests.test_sslmgr import make_cert
+    pem = make_cert("api.example", days_valid=200)
+    r = client.post("/api/ssl/analyze-cert", json={"pem": pem})
+    assert r.status_code == 200
+    assert r.json()[0]["subject_cn"] == "api.example"
+
+
+def test_ssl_analyze_cert_invalid():
+    r = client.post("/api/ssl/analyze-cert", json={"pem": "garbage"})
+    assert r.status_code == 400
+
+
+def test_ssl_scan_endpoint():
+    cfg = "frontend web\n    bind *:443 ssl crt /nope/site.pem ciphers RC4\n"
+    r = client.post("/api/ssl/scan", json={"content": cfg, "read_files": False})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ciphers"][0]["grade"] == "F"
+    assert any(ref["kind"] == "bind-crt" for ref in body["references"])

@@ -3,6 +3,7 @@ import { fetchAnalysis, fetchTopology, type AnalysisResult, type TopologyGraph }
 import TopologyView from './TopologyView'
 import FindingsPanel from './FindingsPanel'
 import FixBar from './FixBar'
+import SslPanel from './SslPanel'
 import Dashboard from './Dashboard'
 import './App.css'
 
@@ -23,7 +24,7 @@ backend api_servers
     server api1 10.0.1.11:9000 check
 `
 
-type Tab = 'topology' | 'findings' | 'dashboard'
+type Tab = 'topology' | 'findings' | 'ssl' | 'dashboard'
 
 export default function App() {
   const [config, setConfig] = useState(SAMPLE)
@@ -75,6 +76,9 @@ export default function App() {
             <button className={tab === 'findings' ? 'active' : ''} onClick={() => setTab('findings')}>
               Findings{analysis ? ` (${issueCount})` : ''}
             </button>
+            <button className={tab === 'ssl' ? 'active' : ''} onClick={() => setTab('ssl')}>
+              SSL
+            </button>
             <button className={tab === 'dashboard' ? 'active' : ''} onClick={() => setTab('dashboard')}>
               Dashboard
             </button>
@@ -92,6 +96,7 @@ export default function App() {
                 <FindingsPanel result={analysis} />
               </>
             ) : <p className="empty">No analysis yet.</p>)}
+            {!error && tab === 'ssl' && <SslPanel config={config} />}
             {!error && tab === 'dashboard' && <Dashboard />}
           </div>
         </section>

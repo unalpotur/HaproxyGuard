@@ -92,6 +92,22 @@ main { display: flex; flex: 1; min-height: 0; }
 .fix-proposal .valid-ok { color: #34d399; font-size: 13px; }
 .fix-proposal .valid-bad { color: #f87171; font-size: 13px; }
 .fix-proposal .diff { background: #020617; border: 1px solid #1e293b; border-radius: 6px; padding: 10px; overflow: auto; font-size: 12px; line-height: 1.4; max-height: 320px; white-space: pre; }
+
+/* SSL Manager */
+.ssl-panel h4 { margin: 16px 0 6px; color: #e2e8f0; }
+.ssl-actions { margin-bottom: 10px; }
+.ssl-alerts { margin: 8px 0; padding-left: 18px; color: #fca5a5; font-size: 13px; }
+.cert-entry { margin: 8px 0; }
+.cert-entry > code { color: #93c5fd; font-size: 12px; }
+.cert-entry > em { color: #94a3b8; font-size: 12px; }
+.cert-card { border-left: 3px solid #475569; background: #0f172a; border-radius: 6px; padding: 8px 10px; margin: 6px 0; display: flex; flex-direction: column; gap: 2px; }
+.cert-head { display: flex; align-items: center; gap: 10px; }
+.cert-card small { color: #94a3b8; font-size: 12px; }
+.cert-issue { color: #fca5a5; font-size: 13px; margin: 2px 0; }
+.cipher-row { display: flex; gap: 10px; align-items: flex-start; background: #0f172a; border-radius: 6px; padding: 8px 10px; margin: 6px 0; }
+.cipher-row .grade { font-weight: 700; color: #fff; border-radius: 6px; padding: 2px 10px; min-width: 28px; text-align: center; }
+.cipher-row small { display: block; color: #94a3b8; font-size: 12px; }
+.pem-input { width: 100%; min-height: 110px; background: #020617; color: #e2e8f0; border: 1px solid #1e293b; border-radius: 6px; padding: 8px; font-family: monospace; font-size: 12px; margin-bottom: 8px; }
 .finding small { color: #64748b; }
 
 .dashboard { padding: 16px; }

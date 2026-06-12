@@ -8,6 +8,7 @@ from .parser.parser import parse_config
 from .parser.models import HaproxyConfig
 from .analyzer.rules import analyze, Finding
 from .autofix import FixEngine, FixProposal, has_fix
+from .sslmgr import analyze_pem, scan as ssl_scan, CertificateInfo, SslReport
 from .metrics.client import StatsClientError, StatsSocketClient
 from .metrics.collector import MetricsCollector
 
@@ -95,6 +96,30 @@ def fix_rollback(body: RollbackInput) -> dict:
         raise HTTPException(status_code=404, detail="Unknown version_id")
     return {"version_id": version.version_id, "content": version.content,
             "created_at": version.created_at.isoformat()}
+
+
+class CertInput(BaseModel):
+    pem: str
+
+
+class SslScanInput(BaseModel):
+    content: str
+    read_files: bool = True
+
+
+@app.post("/api/ssl/analyze-cert", response_model=list[CertificateInfo])
+def ssl_analyze_cert(body: CertInput) -> list[CertificateInfo]:
+    """Parse a pasted PEM bundle (chain or cert+key) and report each cert."""
+    try:
+        return analyze_pem(body.pem)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid PEM: {exc}")
+
+
+@app.post("/api/ssl/scan", response_model=SslReport)
+def ssl_scan_config(body: SslScanInput) -> SslReport:
+    """Scan a config for certificate references, expiry status and cipher grades."""
+    return ssl_scan(parse_config(body.content), read_files=body.read_files)
 
 
 @app.post("/api/topology")
