@@ -239,6 +239,35 @@ export interface ClusterOverview {
   distinct_config_hashes: number
 }
 
+export interface Alert {
+  severity: string
+  source: string
+  title: string
+  detail: string
+  created_at: string
+}
+
+export interface AlertChannel {
+  id: string
+  name: string
+  type: string
+  url: string
+  min_severity: string
+}
+
+export interface ChannelSendResult {
+  channel_id: string
+  name: string
+  ok: boolean
+  sent: number
+  message: string
+}
+
+export interface DispatchResult {
+  alerts: Alert[]
+  results: ChannelSendResult[]
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
@@ -317,6 +346,26 @@ export const clusterRollback = (nodeId: string) =>
 
 export const clusterRemove = async (nodeId: string): Promise<void> => {
   const res = await fetch(`/api/cluster/nodes/${nodeId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`delete failed: ${res.status}`)
+}
+
+export const alertsEvaluate = (content: string, logs: string) =>
+  postJson<Alert[]>('/api/alerts/evaluate', { content, logs: logs || null })
+
+export const alertsDispatch = (content: string, logs: string) =>
+  postJson<DispatchResult>('/api/alerts/dispatch', { content, logs: logs || null })
+
+export const alertChannels = async (): Promise<AlertChannel[]> => {
+  const res = await fetch('/api/alerts/channels')
+  if (!res.ok) throw new Error(`/api/alerts/channels failed: ${res.status}`)
+  return res.json()
+}
+
+export const addAlertChannel = (name: string, type: string, url: string, min_severity: string) =>
+  postJson<AlertChannel>('/api/alerts/channels', { name, type, url, min_severity })
+
+export const removeAlertChannel = async (id: string): Promise<void> => {
+  const res = await fetch(`/api/alerts/channels/${id}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`delete failed: ${res.status}`)
 }
 

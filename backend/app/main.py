@@ -12,12 +12,14 @@ from .sslmgr import analyze_pem, scan as ssl_scan, CertificateInfo, SslReport
 from . import security as sec
 from . import assistant as ai
 from . import cluster as cl
+from . import alerts as al
 from .metrics.client import StatsClientError, StatsSocketClient
 from .metrics.collector import MetricsCollector
 
 collector: MetricsCollector | None = None
 fix_engine = FixEngine()
 registry = cl.ClusterRegistry()
+channels = al.ChannelRegistry()
 
 
 @asynccontextmanager
@@ -182,6 +184,44 @@ def assistant_analyze(body: AssistantInput) -> ai.AssistantReport:
     metrics = collector.latest if (body.include_metrics and collector) else None
     return ai.analyze_deployment(
         body.content, logs_text=body.logs, metrics=metrics, use_llm=body.use_llm)
+
+
+# --- Alerting -----------------------------------------------------------
+
+def _evaluate_alerts(body: al.EvaluateInput) -> list[al.Alert]:
+    overview = registry.overview() if body.include_cluster else None
+    return al.evaluate(body.content, body.logs, body.thresholds,
+                       read_certs=body.read_certs, cluster_overview=overview)
+
+
+@app.post("/api/alerts/evaluate", response_model=list[al.Alert])
+def alerts_evaluate(body: al.EvaluateInput) -> list[al.Alert]:
+    """Evaluate the deployment and return alerts without notifying anyone."""
+    return _evaluate_alerts(body)
+
+
+@app.post("/api/alerts/dispatch", response_model=al.DispatchResult)
+def alerts_dispatch(body: al.EvaluateInput) -> al.DispatchResult:
+    """Evaluate and send the alerts to every configured channel."""
+    found = _evaluate_alerts(body)
+    return al.DispatchResult(alerts=found, results=channels.dispatch(found))
+
+
+@app.get("/api/alerts/channels", response_model=list[al.AlertChannel])
+def alerts_channels() -> list[al.AlertChannel]:
+    return channels.list()
+
+
+@app.post("/api/alerts/channels", response_model=al.AlertChannel)
+def alerts_add_channel(body: al.ChannelInput) -> al.AlertChannel:
+    return channels.add(body)
+
+
+@app.delete("/api/alerts/channels/{channel_id}")
+def alerts_remove_channel(channel_id: str) -> dict:
+    if not channels.remove(channel_id):
+        raise HTTPException(status_code=404, detail="Unknown channel")
+    return {"removed": channel_id}
 
 
 # --- Multi-node cluster: control plane (dashboard) ----------------------

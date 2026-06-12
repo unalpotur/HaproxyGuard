@@ -7,6 +7,7 @@ import SslPanel from './SslPanel'
 import SecurityPanel from './SecurityPanel'
 import AssistantPanel from './AssistantPanel'
 import ClusterPanel from './ClusterPanel'
+import AlertsPanel from './AlertsPanel'
 import Dashboard from './Dashboard'
 import './App.css'
 
@@ -27,7 +28,7 @@ backend api_servers
     server api1 10.0.1.11:9000 check
 `
 
-type Tab = 'topology' | 'findings' | 'ssl' | 'security' | 'assistant' | 'cluster' | 'dashboard'
+type Tab = 'topology' | 'findings' | 'ssl' | 'security' | 'assistant' | 'cluster' | 'alerts' | 'dashboard'
 
 export default function App() {
   const [config, setConfig] = useState(SAMPLE)
@@ -91,6 +92,9 @@ export default function App() {
             <button className={tab === 'cluster' ? 'active' : ''} onClick={() => setTab('cluster')}>
               Cluster
             </button>
+            <button className={tab === 'alerts' ? 'active' : ''} onClick={() => setTab('alerts')}>
+              Alerts
+            </button>
             <button className={tab === 'dashboard' ? 'active' : ''} onClick={() => setTab('dashboard')}>
               Dashboard
             </button>
@@ -112,6 +116,7 @@ export default function App() {
             {!error && tab === 'security' && <SecurityPanel config={config} />}
             {!error && tab === 'assistant' && <AssistantPanel config={config} />}
             {!error && tab === 'cluster' && <ClusterPanel config={config} />}
+            {!error && tab === 'alerts' && <AlertsPanel config={config} />}
             {!error && tab === 'dashboard' && <Dashboard />}
           </div>
         </section>

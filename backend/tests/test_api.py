@@ -182,3 +182,31 @@ def test_cluster_overview_endpoint():
     r = client.get("/api/cluster/overview")
     assert r.status_code == 200
     assert "total" in r.json()
+
+
+def test_alerts_evaluate_endpoint():
+    cfg = "frontend f\n    bind *:443 ssl crt /x.pem ssl-min-ver TLSv1.0 ciphers RC4\n    default_backend ghost\n"
+    r = client.post("/api/alerts/evaluate",
+                    json={"content": cfg, "include_cluster": False})
+    assert r.status_code == 200
+    alerts = r.json()
+    assert any(a["source"] == "config" for a in alerts)
+    assert any(a["severity"] == "critical" for a in alerts)
+
+
+def test_alerts_channel_crud_and_dispatch():
+    add = client.post("/api/alerts/channels",
+                      json={"name": "ops", "type": "webhook",
+                            "url": "http://127.0.0.1:9/none", "min_severity": "high"})
+    cid = add.json()["id"]
+    assert any(c["id"] == cid for c in client.get("/api/alerts/channels").json())
+
+    # dispatch to an unreachable channel: alerts found, send reported as failed (not raised)
+    cfg = "frontend f\n    bind *:80\n    default_backend ghost\n"
+    disp = client.post("/api/alerts/dispatch", json={"content": cfg, "include_cluster": False})
+    body = disp.json()
+    assert body["alerts"]
+    assert body["results"] and body["results"][0]["ok"] is False
+
+    assert client.delete(f"/api/alerts/channels/{cid}").status_code == 200
+    assert client.delete(f"/api/alerts/channels/{cid}").status_code == 404

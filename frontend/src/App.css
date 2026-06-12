@@ -172,6 +172,20 @@ main { display: flex; flex: 1; min-height: 0; }
 .node-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .node-actions button { padding: 3px 8px; font-size: 12px; }
 .node-actions button.warn { background: #b45309; }
+
+/* Alerts */
+.alerts-panel h4 { margin: 16px 0 8px; color: #e2e8f0; }
+.alert-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border-left: 3px solid #475569; background: #0f172a; border-radius: 6px; padding: 8px 10px; margin: 6px 0; }
+.alert-row .src { color: #94a3b8; font-size: 11px; text-transform: uppercase; }
+.alert-row small { color: #cbd5e1; font-size: 13px; }
+.chan-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 6px 10px; margin: 6px 0; }
+.chan-row code { color: #93c5fd; font-size: 12px; }
+.chan-row .src { color: #94a3b8; font-size: 11px; text-transform: uppercase; }
+.chan-row button.warn { background: #b45309; margin-left: auto; padding: 2px 8px; }
+.dispatch-results { list-style: none; padding: 0; margin: 8px 0; font-size: 13px; }
+.dispatch-results li.ok { color: #34d399; }
+.dispatch-results li.fail { color: #f87171; }
+.enroll-row select { background: #020617; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 6px 8px; }
 .finding small { color: #64748b; }
 
 .dashboard { padding: 16px; }
