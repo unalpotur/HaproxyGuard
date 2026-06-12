@@ -1,7 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from .parser.parser import parse_config
@@ -11,11 +11,13 @@ from .autofix import FixEngine, FixProposal, has_fix
 from .sslmgr import analyze_pem, scan as ssl_scan, CertificateInfo, SslReport
 from . import security as sec
 from . import assistant as ai
+from . import cluster as cl
 from .metrics.client import StatsClientError, StatsSocketClient
 from .metrics.collector import MetricsCollector
 
 collector: MetricsCollector | None = None
 fix_engine = FixEngine()
+registry = cl.ClusterRegistry()
 
 
 @asynccontextmanager
@@ -180,6 +182,82 @@ def assistant_analyze(body: AssistantInput) -> ai.AssistantReport:
     metrics = collector.latest if (body.include_metrics and collector) else None
     return ai.analyze_deployment(
         body.content, logs_text=body.logs, metrics=metrics, use_llm=body.use_llm)
+
+
+# --- Multi-node cluster: control plane (dashboard) ----------------------
+
+@app.post("/api/cluster/nodes", response_model=cl.EnrollResponse)
+def cluster_enroll(body: cl.EnrollInput) -> cl.EnrollResponse:
+    """Enroll an HAProxy agent; returns a bearer token shown only once."""
+    return registry.enroll(body.name, body.address, body.labels)
+
+
+@app.get("/api/cluster/nodes", response_model=list[cl.Node])
+def cluster_nodes() -> list[cl.Node]:
+    return registry.list_nodes()
+
+
+@app.get("/api/cluster/overview", response_model=cl.ClusterOverview)
+def cluster_overview() -> cl.ClusterOverview:
+    return registry.overview()
+
+
+@app.get("/api/cluster/nodes/{node_id}", response_model=cl.Node)
+def cluster_node(node_id: str) -> cl.Node:
+    node = registry.get(node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="Unknown node")
+    return node
+
+
+@app.delete("/api/cluster/nodes/{node_id}")
+def cluster_remove(node_id: str) -> dict:
+    if not registry.remove(node_id):
+        raise HTTPException(status_code=404, detail="Unknown node")
+    return {"removed": node_id}
+
+
+@app.get("/api/cluster/nodes/{node_id}/deployments", response_model=list[cl.Deployment])
+def cluster_deployments(node_id: str) -> list[cl.Deployment]:
+    if registry.get(node_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown node")
+    return registry.deployments(node_id)
+
+
+@app.post("/api/cluster/deploy", response_model=cl.DeployResult)
+def cluster_deploy(body: cl.DeployInput) -> cl.DeployResult:
+    """Validate and push a config to nodes (by id list or label selector)."""
+    return registry.deploy(body.content, body.node_ids, body.selector, body.validate_config)
+
+
+@app.post("/api/cluster/nodes/{node_id}/rollback", response_model=cl.Deployment)
+def cluster_rollback(node_id: str) -> cl.Deployment:
+    if registry.get(node_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown node")
+    dep = registry.rollback(node_id)
+    if dep is None:
+        raise HTTPException(status_code=409, detail="No previous version to roll back to")
+    return dep
+
+
+# --- Multi-node cluster: agent plane (token-authenticated) --------------
+
+def _auth_agent(node_id: str, authorization: str | None) -> None:
+    token = ""
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:]
+    if not registry.authenticate(node_id, token):
+        raise HTTPException(status_code=401, detail="Invalid node token")
+
+
+@app.post("/api/agent/{node_id}/heartbeat", response_model=cl.HeartbeatResult)
+def agent_heartbeat(node_id: str, body: cl.HeartbeatInput,
+                    authorization: str | None = Header(default=None)) -> cl.HeartbeatResult:
+    """Called by an agent: report status, receive any pending desired config."""
+    if registry.get(node_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown node")
+    _auth_agent(node_id, authorization)
+    return registry.heartbeat(node_id, body)
 
 
 @app.post("/api/topology")

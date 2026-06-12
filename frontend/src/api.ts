@@ -191,6 +191,54 @@ export interface AssistantReport {
   llm_narrative: string | null
 }
 
+export interface ClusterNode {
+  id: string
+  name: string
+  address: string
+  labels: Record<string, string>
+  status: 'online' | 'offline' | 'pending'
+  enrolled_at: string
+  last_seen: string | null
+  agent_version: string | null
+  haproxy_version: string | null
+  config_hash: string | null
+  pending_version: number | null
+  applied_version: number | null
+  metrics: Record<string, unknown>
+}
+
+export interface EnrollResponse {
+  node: ClusterNode
+  token: string
+}
+
+export interface ClusterDeployment {
+  id: string
+  node_id: string
+  version: number
+  config_hash: string
+  status: string
+  created_at: string
+  message: string
+  findings_summary: Record<string, number>
+}
+
+export interface DeployResult {
+  deployments: ClusterDeployment[]
+  skipped: string[]
+}
+
+export interface ClusterOverview {
+  total: number
+  online: number
+  offline: number
+  pending: number
+  pending_deploys: number
+  haproxy_versions: Record<string, number>
+  agent_versions: Record<string, number>
+  distinct_config_hashes: number
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
@@ -245,3 +293,37 @@ export const assistantAnalyze = (content: string, logs: string, use_llm: boolean
   postJson<AssistantReport>('/api/assistant/analyze', {
     content, logs: logs || null, use_llm,
   })
+
+export const clusterNodes = async (): Promise<ClusterNode[]> => {
+  const res = await fetch('/api/cluster/nodes')
+  if (!res.ok) throw new Error(`/api/cluster/nodes failed: ${res.status}`)
+  return res.json()
+}
+
+export const clusterOverview = async (): Promise<ClusterOverview> => {
+  const res = await fetch('/api/cluster/overview')
+  if (!res.ok) throw new Error(`/api/cluster/overview failed: ${res.status}`)
+  return res.json()
+}
+
+export const clusterEnroll = (name: string, address: string, labels: Record<string, string>) =>
+  postJson<EnrollResponse>('/api/cluster/nodes', { name, address, labels })
+
+export const clusterDeploy = (content: string, node_ids: string[], validate_config: boolean) =>
+  postJson<DeployResult>('/api/cluster/deploy', { content, node_ids, validate_config })
+
+export const clusterRollback = (nodeId: string) =>
+  postJson<ClusterDeployment>(`/api/cluster/nodes/${nodeId}/rollback`, {})
+
+export const clusterRemove = async (nodeId: string): Promise<void> => {
+  const res = await fetch(`/api/cluster/nodes/${nodeId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`delete failed: ${res.status}`)
+}
+
+// Simulate an agent check-in from the dashboard (dev/demo aid).
+export const agentHeartbeat = (nodeId: string, token: string, body: unknown) =>
+  fetch(`/api/agent/${nodeId}/heartbeat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  }).then((r) => { if (!r.ok) throw new Error(`heartbeat failed: ${r.status}`); return r.json() })

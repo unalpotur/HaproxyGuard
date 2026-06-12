@@ -140,3 +140,45 @@ def test_assistant_analyze_endpoint():
     assert body["risk_level"] in ("low", "medium", "high", "critical")
     assert body["used_llm"] is False
     assert isinstance(body["root_causes"], list)
+
+
+def test_cluster_enroll_deploy_heartbeat_flow():
+    enroll = client.post("/api/cluster/nodes",
+                         json={"name": "edge-1", "address": "10.0.0.1", "labels": {"role": "edge"}})
+    assert enroll.status_code == 200
+    body = enroll.json()
+    node_id = body["node"]["id"]
+    token = body["token"]
+    assert body["node"]["status"] == "pending"
+
+    # deploy a config to the node (no validation — env-independent)
+    cfg = "defaults\n    mode http\n"
+    dep = client.post("/api/cluster/deploy",
+                      json={"content": cfg, "node_ids": [node_id], "validate_config": False})
+    assert dep.json()["deployments"][0]["status"] == "pending"
+
+    # agent heartbeat with valid token receives the desired config
+    hb = client.post(f"/api/agent/{node_id}/heartbeat",
+                     json={"haproxy_version": "2.8"},
+                     headers={"Authorization": f"Bearer {token}"})
+    assert hb.status_code == 200
+    assert hb.json()["desired_config"] == cfg
+
+    # node now shows online in the dashboard
+    nodes = client.get("/api/cluster/nodes").json()
+    me = next(n for n in nodes if n["id"] == node_id)
+    assert me["status"] == "online" and me["haproxy_version"] == "2.8"
+
+
+def test_agent_heartbeat_rejects_bad_token():
+    node_id = client.post("/api/cluster/nodes",
+                          json={"name": "n", "address": "10.0.0.9"}).json()["node"]["id"]
+    r = client.post(f"/api/agent/{node_id}/heartbeat", json={},
+                    headers={"Authorization": "Bearer nope"})
+    assert r.status_code == 401
+
+
+def test_cluster_overview_endpoint():
+    r = client.get("/api/cluster/overview")
+    assert r.status_code == 200
+    assert "total" in r.json()
