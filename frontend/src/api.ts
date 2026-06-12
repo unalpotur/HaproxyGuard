@@ -156,6 +156,41 @@ export interface SecurityPosture {
   recommendations: string[]
 }
 
+export interface RootCause {
+  title: string
+  severity: string
+  category: string
+  evidence: string
+}
+
+export interface Recommendation {
+  action: string
+  rationale: string
+  priority: string
+}
+
+export interface LogSummary {
+  total_lines: number
+  parsed: number
+  error_rate: number
+  status_classes: Record<string, number>
+  slow_count: number
+  slow_threshold_ms: number
+  avg_response_ms: number | null
+  backends_by_error: { backend: string; errors: number; total: number }[]
+}
+
+export interface AssistantReport {
+  risk_score: number
+  risk_level: 'low' | 'medium' | 'high' | 'critical'
+  summary: string
+  root_causes: RootCause[]
+  recommendations: Recommendation[]
+  log_summary: LogSummary | null
+  used_llm: boolean
+  llm_narrative: string | null
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
@@ -199,3 +234,14 @@ export const generateSecurity = (preset: string) =>
 
 export const securityPosture = (content: string) =>
   postJson<SecurityPosture>('/api/security/posture', { content })
+
+export const assistantStatus = async (): Promise<{ llm_available: boolean }> => {
+  const res = await fetch('/api/assistant/status')
+  if (!res.ok) throw new Error(`/api/assistant/status failed: ${res.status}`)
+  return res.json()
+}
+
+export const assistantAnalyze = (content: string, logs: string, use_llm: boolean) =>
+  postJson<AssistantReport>('/api/assistant/analyze', {
+    content, logs: logs || null, use_llm,
+  })

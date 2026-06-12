@@ -124,6 +124,31 @@ main { display: flex; flex: 1; min-height: 0; }
 .sec-control small { display: block; color: #94a3b8; font-size: 12px; }
 .preset-desc { color: #94a3b8; font-size: 13px; margin: 4px 0 8px; }
 .snippet { background: #020617; border: 1px solid #1e293b; border-radius: 6px; padding: 10px; overflow: auto; font-size: 12px; line-height: 1.5; white-space: pre; max-height: 360px; }
+
+/* AI Assistant */
+.assistant-intro { color: #94a3b8; font-size: 13px; margin: 0 0 8px; }
+.assistant-panel h4 { margin: 16px 0 8px; color: #e2e8f0; }
+.logs-input { width: 100%; min-height: 90px; background: #020617; color: #e2e8f0; border: 1px solid #1e293b; border-radius: 6px; padding: 8px; font-family: monospace; font-size: 12px; margin-bottom: 8px; }
+.assistant-actions { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
+.assistant-actions label { color: #cbd5e1; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.assistant-actions label.disabled { color: #64748b; }
+.risk { display: flex; align-items: center; gap: 14px; border: 1px solid; border-radius: 8px; padding: 12px; margin: 10px 0; }
+.risk-score { font-size: 22px; font-weight: 700; color: #fff; border-radius: 8px; padding: 6px 14px; min-width: 48px; text-align: center; }
+.risk p { margin: 4px 0 0; color: #cbd5e1; font-size: 13px; }
+.narrative { background: #0f172a; border: 1px solid #312e81; border-radius: 8px; padding: 12px; margin: 10px 0; }
+.narrative p { color: #e2e8f0; font-size: 14px; line-height: 1.55; white-space: pre-wrap; }
+.badge.ai { background: #4f46e5; }
+.log-stats { color: #94a3b8; font-size: 13px; }
+.cause { border-left: 3px solid #475569; background: #0f172a; border-radius: 6px; padding: 8px 10px; margin: 6px 0; }
+.cause-head { display: flex; align-items: center; gap: 10px; }
+.cause p { margin: 4px 0 0; color: #cbd5e1; font-size: 13px; }
+.recs { margin: 6px 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
+.recs li { color: #e2e8f0; }
+.recs small { display: block; color: #94a3b8; font-size: 12px; }
+.prio { font-size: 10px; text-transform: uppercase; border-radius: 4px; padding: 1px 6px; margin-right: 8px; color: #fff; }
+.prio.high { background: #dc2626; }
+.prio.medium { background: #ca8a04; }
+.prio.low { background: #2563eb; }
 .finding small { color: #64748b; }
 
 .dashboard { padding: 16px; }

@@ -123,3 +123,20 @@ def test_security_posture_endpoint():
     body = r.json()
     assert body["total"] >= 5
     assert 0 <= body["score"] <= 100
+
+
+def test_assistant_status_endpoint():
+    r = client.get("/api/assistant/status")
+    assert r.status_code == 200
+    assert "llm_available" in r.json()
+
+
+def test_assistant_analyze_endpoint():
+    cfg = "frontend web\n    bind *:443 ssl crt /x.pem ssl-min-ver TLSv1.0\n    default_backend ghost\n"
+    r = client.post("/api/assistant/analyze", json={"content": cfg, "use_llm": False})
+    assert r.status_code == 200
+    body = r.json()
+    assert 0 <= body["risk_score"] <= 100
+    assert body["risk_level"] in ("low", "medium", "high", "critical")
+    assert body["used_llm"] is False
+    assert isinstance(body["root_causes"], list)

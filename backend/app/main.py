@@ -10,6 +10,7 @@ from .analyzer.rules import analyze, Finding
 from .autofix import FixEngine, FixProposal, has_fix
 from .sslmgr import analyze_pem, scan as ssl_scan, CertificateInfo, SslReport
 from . import security as sec
+from . import assistant as ai
 from .metrics.client import StatsClientError, StatsSocketClient
 from .metrics.collector import MetricsCollector
 
@@ -158,6 +159,27 @@ def security_generate(body: SecurityGenerateInput) -> sec.GeneratedConfig:
 def security_posture(body: ConfigInput) -> sec.SecurityPosture:
     """Report which security controls a config already implements."""
     return sec.assess(parse_config(body.content))
+
+
+class AssistantInput(BaseModel):
+    content: str
+    logs: str | None = None
+    use_llm: bool = True
+    include_metrics: bool = True
+
+
+@app.get("/api/assistant/status")
+def assistant_status() -> dict:
+    """Whether the LLM-backed narrative is available (API key + SDK present)."""
+    return {"llm_available": ai.llm_available()}
+
+
+@app.post("/api/assistant/analyze", response_model=ai.AssistantReport)
+def assistant_analyze(body: AssistantInput) -> ai.AssistantReport:
+    """Root-cause analysis, risk score and recommendations for a deployment."""
+    metrics = collector.latest if (body.include_metrics and collector) else None
+    return ai.analyze_deployment(
+        body.content, logs_text=body.logs, metrics=metrics, use_llm=body.use_llm)
 
 
 @app.post("/api/topology")
