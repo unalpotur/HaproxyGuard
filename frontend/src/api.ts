@@ -24,6 +24,7 @@ export interface Finding {
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info'
   title: string
   detail: string
+  category: string
   section: string | null
   line_number: number | null
   suggestion: string | null

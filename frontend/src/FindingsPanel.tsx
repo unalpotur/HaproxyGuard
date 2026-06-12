@@ -28,6 +28,7 @@ export default function FindingsPanel({ result }: { result: AnalysisResult }) {
               {f.severity}
             </span>
             <strong>{f.title}</strong>
+            {f.category && <span className="category">{f.category}</span>}
             <code>{f.rule_id}</code>
           </div>
           <p>{f.detail}</p>
