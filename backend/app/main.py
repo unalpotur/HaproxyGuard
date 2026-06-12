@@ -14,6 +14,7 @@ from . import assistant as ai
 from . import cluster as cl
 from . import alerts as al
 from . import authz
+from . import versions as ver
 from .metrics.client import StatsClientError, StatsSocketClient
 from .metrics.collector import MetricsCollector
 
@@ -21,6 +22,7 @@ collector: MetricsCollector | None = None
 fix_engine = FixEngine()
 registry = cl.ClusterRegistry()
 channels = al.ChannelRegistry()
+version_store = ver.VersionStore()
 principals = authz.PrincipalRegistry()
 audit = authz.AuditLog()
 
@@ -211,6 +213,47 @@ def assistant_analyze(body: AssistantInput) -> ai.AssistantReport:
     metrics = collector.latest if (body.include_metrics and collector) else None
     return ai.analyze_deployment(
         body.content, logs_text=body.logs, metrics=metrics, use_llm=body.use_llm)
+
+
+# --- Config versioning & diff -------------------------------------------
+
+@app.get("/api/versions", response_model=list[ver.ConfigVersion])
+def versions_list() -> list[ver.ConfigVersion]:
+    return version_store.list()
+
+
+@app.post("/api/versions", response_model=ver.ConfigVersion)
+def versions_save(body: ver.SaveVersionInput,
+                  principal: authz.Principal = Depends(current_principal)) -> ver.ConfigVersion:
+    require(principal, "operator", "versions.save", body.label or None)
+    return version_store.save(body.content, body.label, body.message, principal.name)
+
+
+@app.get("/api/versions/diff", response_model=ver.DiffResult)
+def versions_diff(a: str, b: str) -> ver.DiffResult:
+    try:
+        return ver.DiffResult(a=a, b=b, diff=version_store.diff(a, b))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown version id")
+
+
+@app.get("/api/versions/{version_id}", response_model=ver.VersionContent)
+def versions_get(version_id: str) -> ver.VersionContent:
+    v = version_store.get(version_id)
+    content = version_store.content(version_id)
+    if v is None or content is None:
+        raise HTTPException(status_code=404, detail="Unknown version id")
+    return ver.VersionContent(version=v, content=content)
+
+
+@app.post("/api/versions/{version_id}/restore", response_model=ver.VersionContent)
+def versions_restore(version_id: str,
+                     principal: authz.Principal = Depends(current_principal)) -> ver.VersionContent:
+    require(principal, "operator", "versions.restore", version_id)
+    v = version_store.restore(version_id, principal.name)
+    if v is None:
+        raise HTTPException(status_code=404, detail="Unknown version id")
+    return ver.VersionContent(version=v, content=version_store.content(v.id))
 
 
 # --- Auth & audit (RBAC) ------------------------------------------------

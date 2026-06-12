@@ -284,6 +284,22 @@ export interface AuditEntry {
   created_at: string
 }
 
+export interface ConfigVersion {
+  id: string
+  label: string
+  message: string
+  author: string
+  created_at: string
+  content_hash: string
+  size: number
+  parent_id: string | null
+}
+
+export interface VersionContent {
+  version: ConfigVersion
+  content: string
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
@@ -396,6 +412,24 @@ export const auditLog = async (limit = 200): Promise<AuditEntry[]> => {
   if (!res.ok) throw new Error(`/api/audit failed: ${res.status}`)
   return res.json()
 }
+
+export const listVersions = async (): Promise<ConfigVersion[]> => {
+  const res = await fetch('/api/versions')
+  if (!res.ok) throw new Error(`/api/versions failed: ${res.status}`)
+  return res.json()
+}
+
+export const saveVersion = (content: string, label: string, message: string) =>
+  postJson<ConfigVersion>('/api/versions', { content, label, message })
+
+export const versionDiff = async (a: string, b: string): Promise<{ a: string; b: string; diff: string }> => {
+  const res = await fetch(`/api/versions/diff?a=${a}&b=${b}`)
+  if (!res.ok) throw new Error(`diff failed: ${res.status}`)
+  return res.json()
+}
+
+export const restoreVersion = (id: string) =>
+  postJson<VersionContent>(`/api/versions/${id}/restore`, {})
 
 // Simulate an agent check-in from the dashboard (dev/demo aid).
 export const agentHeartbeat = (nodeId: string, token: string, body: unknown) =>

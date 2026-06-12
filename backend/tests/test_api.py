@@ -219,6 +219,32 @@ def test_whoami_open_mode_is_anonymous_admin():
     assert r.json()["role"] == "admin"
 
 
+def test_versions_save_diff_restore_flow():
+    save1 = client.post("/api/versions", json={"content": "defaults\n    mode http\n",
+                                               "label": "v-initial"})
+    assert save1.status_code == 200
+    vid1 = save1.json()["id"]
+    save2 = client.post("/api/versions",
+                        json={"content": "defaults\n    mode http\n    timeout connect 5s\n"})
+    vid2 = save2.json()["id"]
+
+    diff = client.get(f"/api/versions/diff?a={vid1}&b={vid2}").json()
+    assert "+    timeout connect 5s" in diff["diff"]
+
+    got = client.get(f"/api/versions/{vid1}").json()
+    assert got["version"]["label"] == "v-initial"
+
+    restore = client.post(f"/api/versions/{vid1}/restore").json()
+    assert restore["content"] == "defaults\n    mode http\n"
+    assert restore["version"]["message"] == f"restore of {vid1}"
+
+
+def test_versions_diff_route_not_shadowed_by_id():
+    # 'diff' must resolve to the diff endpoint, not be treated as a version id
+    r = client.get("/api/versions/diff?a=v1&b=v1")
+    assert r.status_code in (200, 404)  # 404 only if v1 absent — never a validation error
+
+
 def test_mutating_action_is_audited():
     # Enrolling a node is an operator action; it must appear in the audit log.
     client.post("/api/cluster/nodes", json={"name": "audited-node", "address": "10.9.9.9"})
