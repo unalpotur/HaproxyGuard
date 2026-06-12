@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 import { fetchAnalysis, fetchTopology, type AnalysisResult, type TopologyGraph } from './api'
 import TopologyView from './TopologyView'
 import FindingsPanel from './FindingsPanel'
+import FixBar from './FixBar'
 import Dashboard from './Dashboard'
 import './App.css'
 
@@ -32,11 +33,12 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  const run = useCallback(async () => {
+  const run = useCallback(async (override?: string) => {
+    const text = override ?? config
     setLoading(true)
     setError(null)
     try {
-      const [g, a] = await Promise.all([fetchTopology(config), fetchAnalysis(config)])
+      const [g, a] = await Promise.all([fetchTopology(text), fetchAnalysis(text)])
       setGraph(g)
       setAnalysis(a)
     } catch (e) {
@@ -52,7 +54,7 @@ export default function App() {
     <div className="layout">
       <header>
         <h1>HAProxy Guard</h1>
-        <button onClick={run} disabled={loading}>
+        <button onClick={() => run()} disabled={loading}>
           {loading ? 'Analyzing…' : 'Parse & Analyze'}
         </button>
       </header>
@@ -80,7 +82,16 @@ export default function App() {
           <div className="panel">
             {error && <p className="error">{error}</p>}
             {!error && tab === 'topology' && (graph ? <TopologyView graph={graph} /> : <p className="empty">Click “Parse &amp; Analyze” to render the topology.</p>)}
-            {!error && tab === 'findings' && (analysis ? <FindingsPanel result={analysis} /> : <p className="empty">No analysis yet.</p>)}
+            {!error && tab === 'findings' && (analysis ? (
+              <>
+                <FixBar
+                  config={config}
+                  result={analysis}
+                  onContentChange={(c) => { setConfig(c); void run(c) }}
+                />
+                <FindingsPanel result={analysis} />
+              </>
+            ) : <p className="empty">No analysis yet.</p>)}
             {!error && tab === 'dashboard' && <Dashboard />}
           </div>
         </section>

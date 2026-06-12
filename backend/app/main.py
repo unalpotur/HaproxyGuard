@@ -7,10 +7,12 @@ from pydantic import BaseModel
 from .parser.parser import parse_config
 from .parser.models import HaproxyConfig
 from .analyzer.rules import analyze, Finding
+from .autofix import FixEngine, FixProposal, has_fix
 from .metrics.client import StatsClientError, StatsSocketClient
 from .metrics.collector import MetricsCollector
 
 collector: MetricsCollector | None = None
+fix_engine = FixEngine()
 
 
 @asynccontextmanager
@@ -59,7 +61,40 @@ def analyze_config(body: ConfigInput) -> AnalysisResult:
     summary: dict[str, int] = {}
     for f in findings:
         summary[f.severity] = summary.get(f.severity, 0) + 1
+        f.fixable = has_fix(f.rule_id)
     return AnalysisResult(findings=findings, summary=summary)
+
+
+class FixInput(BaseModel):
+    content: str
+    rule_ids: list[str] | None = None
+    run_validation: bool = True
+
+
+class RollbackInput(BaseModel):
+    version_id: str
+
+
+@app.post("/api/fix/preview", response_model=FixProposal)
+def fix_preview(body: FixInput) -> FixProposal:
+    """Dry-run: compute the patched config and a unified diff without saving."""
+    return fix_engine.dry_run(body.content, body.rule_ids, body.run_validation)
+
+
+@app.post("/api/fix/apply", response_model=FixProposal)
+def fix_apply(body: FixInput) -> FixProposal:
+    """Apply fixes and record a rollback point (returns version_id)."""
+    return fix_engine.apply(body.content, body.rule_ids, body.run_validation)
+
+
+@app.post("/api/fix/rollback")
+def fix_rollback(body: RollbackInput) -> dict:
+    try:
+        version = fix_engine.rollback(body.version_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown version_id")
+    return {"version_id": version.version_id, "content": version.content,
+            "created_at": version.created_at.isoformat()}
 
 
 @app.post("/api/topology")

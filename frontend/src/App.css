@@ -78,6 +78,20 @@ main { display: flex; flex: 1; min-height: 0; }
 .finding .suggestion { color: #a5b4fc; }
 .finding code { color: #64748b; font-size: 12px; }
 .finding .category { color: #94a3b8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; border: 1px solid #334155; border-radius: 4px; padding: 1px 6px; }
+.finding .fixable { color: #34d399; font-size: 11px; border: 1px solid #065f46; border-radius: 4px; padding: 1px 6px; }
+
+/* Auto Fix Engine bar */
+.fixbar { background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.fixbar-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.fixbar-actions strong { color: #34d399; margin-right: auto; }
+.fixbar button.primary { background: #059669; }
+.fixbar button.warn { background: #b45309; }
+.fix-proposal { margin-top: 10px; }
+.fix-proposal .applied { margin: 6px 0; padding-left: 18px; color: #cbd5e1; font-size: 13px; }
+.fix-proposal .applied em { color: #94a3b8; }
+.fix-proposal .valid-ok { color: #34d399; font-size: 13px; }
+.fix-proposal .valid-bad { color: #f87171; font-size: 13px; }
+.fix-proposal .diff { background: #020617; border: 1px solid #1e293b; border-radius: 6px; padding: 10px; overflow: auto; font-size: 12px; line-height: 1.4; max-height: 320px; white-space: pre; }
 .finding small { color: #64748b; }
 
 .dashboard { padding: 16px; }

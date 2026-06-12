@@ -26,6 +26,7 @@ class Finding(BaseModel):
     section: str | None = None
     line_number: int | None = None
     suggestion: str | None = None
+    fixable: bool = False  # set by the API when an auto-fix exists for this rule
 
 
 RuleFunc = Callable[[HaproxyConfig], list[Finding]]
