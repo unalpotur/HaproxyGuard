@@ -108,6 +108,22 @@ main { display: flex; flex: 1; min-height: 0; }
 .cipher-row .grade { font-weight: 700; color: #fff; border-radius: 6px; padding: 2px 10px; min-width: 28px; text-align: center; }
 .cipher-row small { display: block; color: #94a3b8; font-size: 12px; }
 .pem-input { width: 100%; min-height: 110px; background: #020617; color: #e2e8f0; border: 1px solid #1e293b; border-radius: 6px; padding: 8px; font-family: monospace; font-size: 12px; margin-bottom: 8px; }
+
+/* Security Center */
+.sec-panel h4 { margin: 16px 0 8px; color: #e2e8f0; }
+.sec-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.sec-actions select { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 6px 8px; }
+.sec-panel .score { color: #fff; font-weight: 700; border-radius: 6px; padding: 3px 10px; }
+.sec-controls { display: flex; flex-direction: column; gap: 6px; }
+.sec-control { display: flex; align-items: center; gap: 10px; background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 8px 10px; }
+.sec-control.off { opacity: 0.7; }
+.sec-control .cat { color: #fff; font-size: 11px; text-transform: uppercase; border-radius: 4px; padding: 1px 6px; }
+.sec-control .mark { font-weight: 700; }
+.sec-control.on .mark { color: #34d399; }
+.sec-control.off .mark { color: #f87171; }
+.sec-control small { display: block; color: #94a3b8; font-size: 12px; }
+.preset-desc { color: #94a3b8; font-size: 13px; margin: 4px 0 8px; }
+.snippet { background: #020617; border: 1px solid #1e293b; border-radius: 6px; padding: 10px; overflow: auto; font-size: 12px; line-height: 1.5; white-space: pre; max-height: 360px; }
 .finding small { color: #64748b; }
 
 .dashboard { padding: 16px; }

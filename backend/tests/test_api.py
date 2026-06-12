@@ -90,3 +90,36 @@ def test_ssl_scan_endpoint():
     body = r.json()
     assert body["ciphers"][0]["grade"] == "F"
     assert any(ref["kind"] == "bind-crt" for ref in body["references"])
+
+
+def test_security_catalog_endpoint():
+    r = client.get("/api/security/catalog")
+    body = r.json()
+    assert any(c["id"] == "request_rate" for c in body["controls"])
+    assert any(p["id"] == "strict" for p in body["presets"])
+
+
+def test_security_generate_preset():
+    r = client.post("/api/security/generate", json={"preset": "basic"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["preset"] == "basic"
+    assert any("stick-table" in l for l in body["frontend_lines"])
+
+
+def test_security_generate_unknown_preset():
+    r = client.post("/api/security/generate", json={"preset": "ghost"})
+    assert r.status_code == 404
+
+
+def test_security_generate_requires_input():
+    r = client.post("/api/security/generate", json={})
+    assert r.status_code == 400
+
+
+def test_security_posture_endpoint():
+    cfg = "frontend web\n    bind *:80\n    default_backend a\nbackend a\n    server s 1.1.1.1:80\n"
+    r = client.post("/api/security/posture", json={"content": cfg})
+    body = r.json()
+    assert body["total"] >= 5
+    assert 0 <= body["score"] <= 100

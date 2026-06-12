@@ -110,6 +110,52 @@ export interface SslReport {
   summary: Record<string, number>
 }
 
+export interface SecControlSpec {
+  id: string
+  name: string
+  category: string
+  description: string
+  params: Record<string, unknown>
+}
+
+export interface SecPresetSpec {
+  id: string
+  name: string
+  description: string
+  controls: { id: string; params: Record<string, unknown> }[]
+}
+
+export interface SecurityCatalog {
+  controls: SecControlSpec[]
+  presets: SecPresetSpec[]
+}
+
+export interface GeneratedConfig {
+  preset: string | null
+  controls: { id: string; name: string; category: string; params: Record<string, unknown> }[]
+  global_lines: string[]
+  frontend_lines: string[]
+  notes: string[]
+  snippet: string
+}
+
+export interface ControlStatus {
+  id: string
+  name: string
+  category: string
+  present: boolean
+  sections: string[]
+  detail: string
+}
+
+export interface SecurityPosture {
+  controls: ControlStatus[]
+  present_count: number
+  total: number
+  score: number
+  recommendations: string[]
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
@@ -141,3 +187,15 @@ export const scanSsl = (content: string, read_files = false) =>
 
 export const analyzeCert = (pem: string) =>
   postJson<CertificateInfo[]>('/api/ssl/analyze-cert', { pem })
+
+export const fetchSecurityCatalog = async (): Promise<SecurityCatalog> => {
+  const res = await fetch('/api/security/catalog')
+  if (!res.ok) throw new Error(`/api/security/catalog failed: ${res.status}`)
+  return res.json()
+}
+
+export const generateSecurity = (preset: string) =>
+  postJson<GeneratedConfig>('/api/security/generate', { preset })
+
+export const securityPosture = (content: string) =>
+  postJson<SecurityPosture>('/api/security/posture', { content })

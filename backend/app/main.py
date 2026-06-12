@@ -9,6 +9,7 @@ from .parser.models import HaproxyConfig
 from .analyzer.rules import analyze, Finding
 from .autofix import FixEngine, FixProposal, has_fix
 from .sslmgr import analyze_pem, scan as ssl_scan, CertificateInfo, SslReport
+from . import security as sec
 from .metrics.client import StatsClientError, StatsSocketClient
 from .metrics.collector import MetricsCollector
 
@@ -120,6 +121,43 @@ def ssl_analyze_cert(body: CertInput) -> list[CertificateInfo]:
 def ssl_scan_config(body: SslScanInput) -> SslReport:
     """Scan a config for certificate references, expiry status and cipher grades."""
     return ssl_scan(parse_config(body.content), read_files=body.read_files)
+
+
+class SecurityGenerateInput(BaseModel):
+    preset: str | None = None
+    controls: list[sec.ControlRequest] | None = None
+    table_size: str = "100k"
+    table_expire: str = "30s"
+
+
+@app.get("/api/security/catalog")
+def security_catalog() -> dict:
+    """List available security controls and presets."""
+    return {
+        "controls": [c.model_dump() for c in sec.catalog()],
+        "presets": [p.model_dump() for p in sec.PRESETS.values()],
+    }
+
+
+@app.post("/api/security/generate", response_model=sec.GeneratedConfig)
+def security_generate(body: SecurityGenerateInput) -> sec.GeneratedConfig:
+    """Generate hardening snippets from a preset or an explicit control list."""
+    try:
+        if body.preset:
+            return sec.generate_preset(
+                body.preset, table_size=body.table_size, table_expire=body.table_expire)
+        if not body.controls:
+            raise HTTPException(status_code=400, detail="Provide a preset or controls.")
+        return sec.generate(
+            body.controls, table_size=body.table_size, table_expire=body.table_expire)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown preset/control: {exc}")
+
+
+@app.post("/api/security/posture", response_model=sec.SecurityPosture)
+def security_posture(body: ConfigInput) -> sec.SecurityPosture:
+    """Report which security controls a config already implements."""
+    return sec.assess(parse_config(body.content))
 
 
 @app.post("/api/topology")
