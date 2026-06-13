@@ -1,17 +1,21 @@
-"""In-memory principal (API key) registry and audit log.
+"""DB-backed RBAC principal registry and audit log.
 
-RBAC is *advisory by default*: when no principals are configured the registry is
-"open" and every caller is treated as an admin, so the platform works without
-auth out of the box. As soon as an admin key is configured (env or API) the
-registry enforces roles. Tokens are stored only as salted hashes.
+RBAC is *advisory by default*: when no principals are configured the registry
+is "open" and every caller is treated as an admin. As soon as an admin key is
+configured the registry enforces roles. Tokens are stored only as salted hashes.
 """
 from __future__ import annotations
 
 import hashlib
 import hmac
 import secrets
-from collections import deque
+from datetime import datetime, timezone
 
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from ..db import AsyncSessionLocal
+from ..orm import AuditRow, PrincipalRow, TokenRow
 from .models import AuditEntry, Principal, PrincipalCreated, ROLE_ORDER
 
 
@@ -24,57 +28,99 @@ def has_at_least(role: str, required: str) -> bool:
 
 
 class PrincipalRegistry:
-    def __init__(self) -> None:
-        self._by_name: dict[str, Principal] = {}
-        self._token_hashes: dict[str, str] = {}  # token_hash -> name
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession] | None = None) -> None:
+        self._sf = session_factory or AsyncSessionLocal
 
-    def is_open(self) -> bool:
-        return not self._by_name
+    async def is_open(self) -> bool:
+        """True when no principals configured (open/anonymous mode)."""
+        async with self._sf() as db:
+            count = await db.scalar(select(func.count()).select_from(PrincipalRow))
+            return (count or 0) == 0
 
-    def add(self, name: str, role: str) -> PrincipalCreated:
+    async def add(self, name: str, role: str) -> PrincipalCreated:
         token = secrets.token_urlsafe(24)
-        return self.add_with_token(name, role, token)
+        return await self.add_with_token(name, role, token)
 
-    def add_with_token(self, name: str, role: str, token: str) -> PrincipalCreated:
+    async def add_with_token(self, name: str, role: str, token: str) -> PrincipalCreated:
         if role not in ROLE_ORDER:
             raise ValueError(f"unknown role: {role}")
-        principal = Principal(name=name, role=role)
-        self._by_name[name] = principal
-        self._token_hashes[_hash(token)] = name
-        return PrincipalCreated(principal=principal, token=token)
+        async with self._sf() as db:
+            row = PrincipalRow(name=name, role=role)
+            db.add(row)
+            db.add(TokenRow(token_hash=_hash(token), principal_name=name))
+            await db.commit()
+        return PrincipalCreated(principal=Principal(name=name, role=role), token=token)
 
-    def authenticate(self, token: str) -> Principal | None:
+    async def authenticate(self, token: str) -> Principal | None:
         target = _hash(token)
-        for th, name in self._token_hashes.items():
-            if hmac.compare_digest(th, target):
-                return self._by_name.get(name)
-        return None
+        async with self._sf() as db:
+            result = await db.execute(
+                select(TokenRow).where(TokenRow.token_hash == target)
+            )
+            tok = result.scalar_one_or_none()
+            if tok is None:
+                return None
+            # constant-time compare against the DB value
+            if not hmac.compare_digest(tok.token_hash, target):
+                return None
+            p = await db.get(PrincipalRow, tok.principal_name)
+            return Principal(name=p.name, role=p.role) if p else None
 
-    def list(self) -> list[Principal]:
-        return list(self._by_name.values())
+    async def list(self) -> list[Principal]:
+        async with self._sf() as db:
+            result = await db.execute(select(PrincipalRow))
+            return [Principal(name=r.name, role=r.role) for r in result.scalars()]
 
-    def remove(self, name: str) -> bool:
-        if name not in self._by_name:
-            return False
-        del self._by_name[name]
-        for th, n in list(self._token_hashes.items()):
-            if n == name:
-                del self._token_hashes[th]
-        return True
+    async def remove(self, name: str) -> bool:
+        async with self._sf() as db:
+            row = await db.get(PrincipalRow, name)
+            if row is None:
+                return False
+            await db.delete(row)
+            await db.commit()
+            return True
 
 
 class AuditLog:
-    def __init__(self, maxlen: int = 1000) -> None:
-        self._entries: deque[AuditEntry] = deque(maxlen=maxlen)
-        self._counter = 0
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession] | None = None) -> None:
+        self._sf = session_factory or AsyncSessionLocal
 
-    def append(self, actor: str, role: str, action: str, target: str | None = None,
-               status: str = "ok", detail: str = "") -> AuditEntry:
-        self._counter += 1
-        entry = AuditEntry(id=self._counter, actor=actor, role=role, action=action,
-                           target=target, status=status, detail=detail)
-        self._entries.append(entry)
-        return entry
+    async def append(
+        self,
+        actor: str,
+        role: str,
+        action: str,
+        target: str | None = None,
+        status: str = "ok",
+        detail: str = "",
+    ) -> AuditEntry:
+        async with self._sf() as db:
+            row = AuditRow(
+                actor=actor, role=role, action=action,
+                target=target, status=status, detail=detail,
+                created_at=datetime.now(timezone.utc),
+            )
+            db.add(row)
+            await db.commit()
+            await db.refresh(row)
+            return _row_to_entry(row)
 
-    def list(self, limit: int = 200) -> list[AuditEntry]:
-        return list(self._entries)[-limit:][::-1]  # newest first
+    async def list(self, limit: int = 200) -> list[AuditEntry]:
+        async with self._sf() as db:
+            result = await db.execute(
+                select(AuditRow).order_by(AuditRow.id.desc()).limit(limit)
+            )
+            return [_row_to_entry(r) for r in result.scalars()]
+
+
+def _row_to_entry(row: AuditRow) -> AuditEntry:
+    return AuditEntry(
+        id=row.id,
+        actor=row.actor,
+        role=row.role,
+        action=row.action,
+        target=row.target,
+        status=row.status,
+        detail=row.detail,
+        created_at=row.created_at,
+    )

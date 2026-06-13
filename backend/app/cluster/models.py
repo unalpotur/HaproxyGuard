@@ -21,12 +21,21 @@ class Node(BaseModel):
     pending_version: int | None = None
     applied_version: int | None = None
     metrics: dict = Field(default_factory=dict)
+    deploy_status: str = "pending"  # pending | deploying | deployed | failed
+    service_status: str = "unknown"  # running | stopped | unknown
+    last_action_result: dict | None = None
+    ssh_host: str | None = None
 
 
 class EnrollInput(BaseModel):
     name: str
     address: str
     labels: dict[str, str] = Field(default_factory=dict)
+    ssh_host: str | None = None
+    ssh_user: str | None = None
+    ssh_password: str | None = None
+    auto_deploy: bool = False
+    manage_mode: str = "auto"  # auto | systemd | docker
 
 
 class EnrollResponse(BaseModel):
@@ -63,11 +72,20 @@ class HeartbeatInput(BaseModel):
     config_version: int | None = None  # version the agent currently runs
     config_hash: str | None = None
     metrics: dict = Field(default_factory=dict)
+    last_action: dict | None = None  # result of previous action {type, ok, error|output}
+    service_status: str | None = None  # running | stopped
 
 
 class HeartbeatResult(BaseModel):
     desired_version: int | None = None
     desired_config: str | None = None  # populated only when the agent is behind
+    action: dict | None = None  # pending action {type, params} for the agent to execute
+
+
+class NodeAction(BaseModel):
+    """Admin-triggered action for a specific node."""
+    type: str  # restart | stop | start | cert-list | cert-upload | cert-delete
+    params: dict = Field(default_factory=dict)
 
 
 class ClusterOverview(BaseModel):

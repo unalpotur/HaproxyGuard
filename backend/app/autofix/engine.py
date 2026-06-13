@@ -1,27 +1,42 @@
-"""The Auto Fix Engine: dry-run, apply and rollback over config text."""
+"""DB-backed auto-fix engine: dry-run, apply and rollback over config text.
+
+The engine is stateless with respect to *config computation* — callers pass the
+config text in and get the patched text back. Rollback snapshots are now
+persisted to the database so they survive restarts.
+"""
 from __future__ import annotations
 
 import difflib
 import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..analyzer.rules import analyze
 from ..parser.parser import parse_config
+from ..db import AsyncSessionLocal
+from ..orm import FixVersionRow
 from .models import AppliedFix, FixProposal, Version
 from .registry import get_fix, has_fix
 from . import fixes as _fixes  # noqa: F401  (import registers the fixers)
 from .validator import validate
 
 
+def _row_to_version(row: FixVersionRow) -> Version:
+    return Version(
+        version_id=row.version_id,
+        created_at=row.created_at,
+        content=row.content,
+        note=row.note,
+    )
+
+
 class FixEngine:
-    """Generates and applies safe patches for analyzer findings.
+    """Generates and applies safe patches for analyzer findings."""
 
-    The engine is stateless with respect to *config storage* — callers pass the
-    config text in and get the patched text back — but it does keep an in-memory
-    version store so an applied change can be rolled back to its prior state.
-    """
-
-    def __init__(self) -> None:
-        self._versions: dict[str, Version] = {}
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession] | None = None) -> None:
+        self._sf = session_factory or AsyncSessionLocal
 
     # -- core ---------------------------------------------------------------
 
@@ -34,16 +49,18 @@ class FixEngine:
             if has_fix(f.rule_id):
                 yield f
 
-    def dry_run(self, content: str, rule_ids: list[str] | None = None,
-                run_validation: bool = True) -> FixProposal:
+    def dry_run(
+        self,
+        content: str,
+        rule_ids: list[str] | None = None,
+        run_validation: bool = True,
+    ) -> FixProposal:
+        """Pure computation — no DB access."""
         working = content
         applied: list[AppliedFix] = []
-        skipped: list[str] = []
         seen_noop: set[str] = set()
-        requested_with_fix: set[str] = set()
 
         for finding in self._candidate_findings(content, rule_ids):
-            requested_with_fix.add(finding.rule_id)
             fixer = get_fix(finding.rule_id)
             assert fixer is not None
             new_content, summary = fixer(working, finding)
@@ -55,9 +72,7 @@ class FixEngine:
                 rule_id=finding.rule_id, summary=summary, section=finding.section,
             ))
 
-        # rule_ids that were requested/findable but produced no change
         skipped = sorted(seen_noop - {a.rule_id for a in applied})
-
         diff = self._unified_diff(content, working)
         proposal = FixProposal(
             original_content=content,
@@ -71,28 +86,40 @@ class FixEngine:
             proposal.validation = validate(working)
         return proposal
 
-    def apply(self, content: str, rule_ids: list[str] | None = None,
-              run_validation: bool = True) -> FixProposal:
+    async def apply(
+        self,
+        content: str,
+        rule_ids: list[str] | None = None,
+        run_validation: bool = True,
+    ) -> FixProposal:
         proposal = self.dry_run(content, rule_ids, run_validation)
         if not proposal.changed:
             return proposal
-        # store the PRE-change content so it can be restored
         version_id = uuid.uuid4().hex[:12]
-        self._versions[version_id] = Version(
-            version_id=version_id, content=content,
-            note=f"before applying {len(proposal.applied)} fix(es)",
-        )
+        async with self._sf() as db:
+            db.add(FixVersionRow(
+                version_id=version_id,
+                created_at=datetime.now(timezone.utc),
+                content=content,
+                note=f"before applying {len(proposal.applied)} fix(es)",
+            ))
+            await db.commit()
         proposal.version_id = version_id
         return proposal
 
-    def rollback(self, version_id: str) -> Version:
-        version = self._versions.get(version_id)
-        if version is None:
-            raise KeyError(version_id)
-        return version
+    async def rollback(self, version_id: str) -> Version:
+        async with self._sf() as db:
+            row = await db.get(FixVersionRow, version_id)
+            if row is None:
+                raise KeyError(version_id)
+            return _row_to_version(row)
 
-    def versions(self) -> list[Version]:
-        return sorted(self._versions.values(), key=lambda v: v.created_at, reverse=True)
+    async def versions(self) -> list[Version]:
+        async with self._sf() as db:
+            result = await db.execute(
+                select(FixVersionRow).order_by(FixVersionRow.created_at.desc())
+            )
+            return [_row_to_version(r) for r in result.scalars()]
 
     # -- helpers ------------------------------------------------------------
 

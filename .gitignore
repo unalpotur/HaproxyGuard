@@ -1,10 +1,30 @@
+# Python
 __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+*.egg-info/
+
+# Node / Frontend
 node_modules/
 dist/
+
+# Environment
 .env
 
-# Python build metadata
-*.egg-info/
+# Database (local dev SQLite)
+*.db
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml

@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { fetchAnalysis, fetchTopology, type AnalysisResult, type TopologyGraph } from './api'
+import { fetchAnalysis, fetchTopology, loadLocalConfig, type AnalysisResult, type TopologyGraph } from './api'
 import TopologyView from './TopologyView'
 import FindingsPanel from './FindingsPanel'
 import FixBar from './FixBar'
@@ -34,6 +34,7 @@ type Tab = 'topology' | 'findings' | 'ssl' | 'security' | 'assistant' | 'cluster
 
 export default function App() {
   const [config, setConfig] = useState(SAMPLE)
+  const [logs, setLogs] = useState('')
   const [graph, setGraph] = useState<TopologyGraph | null>(null)
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null)
   const [tab, setTab] = useState<Tab>('topology')
@@ -61,6 +62,21 @@ export default function App() {
     <div className="layout">
       <header>
         <h1>HAProxy Guard</h1>
+        <input
+          type="password" placeholder="API key"
+          defaultValue={localStorage.getItem('hg_api_key') ?? ''}
+          onChange={(e) => localStorage.setItem('hg_api_key', e.target.value)}
+          style={{ width: 140, marginRight: 8 }}
+          title="HG_ADMIN_KEY for RBAC"
+        />
+        <button
+          onClick={() => loadLocalConfig()
+            .then((r) => { setConfig(r.content); void run(r.content) })
+            .catch((e) => setError(e instanceof Error ? e.message : String(e)))}
+          title="Read /etc/haproxy/haproxy.cfg from the API host"
+        >
+          Load server config
+        </button>
         <button onClick={() => run()} disabled={loading}>
           {loading ? 'Analyzing…' : 'Parse & Analyze'}
         </button>
@@ -123,8 +139,19 @@ export default function App() {
             {!error && tab === 'ssl' && <SslPanel config={config} />}
             {!error && tab === 'security' && <SecurityPanel config={config} />}
             {!error && tab === 'assistant' && <AssistantPanel config={config} />}
-            {!error && tab === 'cluster' && <ClusterPanel config={config} />}
-            {!error && tab === 'alerts' && <AlertsPanel config={config} />}
+            {!error && tab === 'cluster' && <ClusterPanel config={config} onConfigChange={(c) => { setConfig(c) }} />}
+            {!error && tab === 'alerts' && (
+              <>
+                <textarea
+                  className="log-input"
+                  value={logs}
+                  onChange={(e) => setLogs(e.target.value)}
+                  placeholder="Paste HAProxy access logs here (optional)…"
+                  rows={6}
+                />
+                <AlertsPanel config={config} logs={logs || undefined} />
+              </>
+            )}
             {!error && tab === 'audit' && <AuditPanel />}
             {!error && tab === 'versions' && (
               <VersionsPanel config={config} onRestore={(c) => { setConfig(c); void run(c) }} />

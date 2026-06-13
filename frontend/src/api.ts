@@ -205,6 +205,10 @@ export interface ClusterNode {
   pending_version: number | null
   applied_version: number | null
   metrics: Record<string, unknown>
+  deploy_status: string
+  service_status: string
+  last_action_result: Record<string, unknown> | null
+  ssh_host: string | null
 }
 
 export interface EnrollResponse {
@@ -300,10 +304,17 @@ export interface VersionContent {
   content: string
 }
 
+function getApiKey(): string | null {
+  return localStorage.getItem('hg_api_key')
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const key = getApiKey()
+  if (key) headers['X-API-Key'] = key
   const res = await fetch(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(`${path} failed: ${res.status}`)
@@ -311,6 +322,12 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 }
 
 const post = <T>(path: string, content: string) => postJson<T>(path, { content })
+
+export const loadLocalConfig = async (): Promise<{ path: string; content: string }> => {
+  const res = await fetch('/api/local-config')
+  if (!res.ok) throw new Error(`No server config (HTTP ${res.status})`)
+  return res.json()
+}
 
 export const fetchTopology = (content: string) => post<TopologyGraph>('/api/topology', content)
 export const fetchAnalysis = (content: string) => post<AnalysisResult>('/api/analyze', content)
@@ -367,8 +384,10 @@ export const clusterOverview = async (): Promise<ClusterOverview> => {
   return res.json()
 }
 
-export const clusterEnroll = (name: string, address: string, labels: Record<string, string>) =>
-  postJson<EnrollResponse>('/api/cluster/nodes', { name, address, labels })
+export const clusterEnroll = (name: string, address: string, labels: Record<string, string>,
+  sshHost?: string, sshUser?: string, sshPassword?: string, autoDeploy?: boolean, manageMode?: string) =>
+  postJson<EnrollResponse>('/api/cluster/nodes',
+    { name, address, labels, ssh_host: sshHost, ssh_user: sshUser, ssh_password: sshPassword, auto_deploy: autoDeploy, manage_mode: manageMode })
 
 export const clusterDeploy = (content: string, node_ids: string[], validate_config: boolean) =>
   postJson<DeployResult>('/api/cluster/deploy', { content, node_ids, validate_config })
@@ -377,7 +396,10 @@ export const clusterRollback = (nodeId: string) =>
   postJson<ClusterDeployment>(`/api/cluster/nodes/${nodeId}/rollback`, {})
 
 export const clusterRemove = async (nodeId: string): Promise<void> => {
-  const res = await fetch(`/api/cluster/nodes/${nodeId}`, { method: 'DELETE' })
+  const headers: Record<string, string> = {}
+  const key = getApiKey()
+  if (key) headers['X-API-Key'] = key
+  const res = await fetch(`/api/cluster/nodes/${nodeId}`, { method: 'DELETE', headers })
   if (!res.ok) throw new Error(`delete failed: ${res.status}`)
 }
 
@@ -438,3 +460,6 @@ export const agentHeartbeat = (nodeId: string, token: string, body: unknown) =>
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
   }).then((r) => { if (!r.ok) throw new Error(`heartbeat failed: ${r.status}`); return r.json() })
+
+export const nodeAction = (nodeId: string, actionType: string, params: Record<string, string> = {}) =>
+  postJson<{ type: string; params: Record<string, string> }>(`/api/cluster/nodes/${nodeId}/action`, { type: actionType, params })

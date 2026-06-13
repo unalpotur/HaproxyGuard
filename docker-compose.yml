@@ -1,16 +1,39 @@
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: haproxyguard
+      POSTGRES_USER: guard
+      POSTGRES_PASSWORD: guard
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guard -d haproxyguard"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   api:
     build:
       context: .
       dockerfile: docker/backend.Dockerfile
     ports:
       - "${HG_API_PORT:-8000}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - /etc/haproxy:/etc/haproxy:ro
+      - ./scripts:/opt/haproxy-guard/scripts:ro
     environment:
-      # Optional: enable the AI assistant narrative and RBAC enforcement.
+      DATABASE_URL: "postgresql+asyncpg://guard:guard@db:5432/haproxyguard"
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       HG_ADMIN_KEY: ${HG_ADMIN_KEY:-}
-      # Optional: point the live Dashboard at a runtime stats socket.
-      HAPROXY_STATS_ADDR: ${HAPROXY_STATS_ADDR:-}
+      HAPROXY_STATS_ADDR: ${HAPROXY_STATS_ADDR:-host.docker.internal:9999}
+      HG_LOCAL_CONFIG: /etc/haproxy/haproxy.cfg
+      GUARD_PUBLIC_URL: ${GUARD_PUBLIC_URL:-http://localhost:7000}
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
@@ -26,18 +49,22 @@ services:
       - "${HG_WEB_PORT:-8080}:80"
     depends_on:
       - api
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
-  # Dev-only HAProxy + echo backends, for the live Dashboard:
+  # ── Dev HAProxy + echo backends ──────────────────────────────────────
   #   docker compose --profile dev up haproxy echo1 echo2
-  #   then run the API with HAPROXY_STATS_ADDR=127.0.0.1:9999
   haproxy:
     image: haproxy:2.9-alpine
     profiles: [dev]
     volumes:
       - ./docker/dev-haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     ports:
-      - "18080:8080"  # proxied traffic
-      - "9999:9999"   # runtime API (dev only)
+      - "18080:8080"
+      - "9999:9999"
     depends_on: [echo1, echo2]
 
   echo1:
@@ -47,15 +74,25 @@ services:
     image: ealen/echo-server
     profiles: [dev]
 
-  # PostgreSQL will be wired in when persistence lands (Phase 3 historical metrics)
-  # db:
-  #   image: postgres:16-alpine
-  #   environment:
-  #     POSTGRES_DB: haproxyguard
-  #     POSTGRES_USER: guard
-  #     POSTGRES_PASSWORD: guard
-  #   volumes:
-  #     - pgdata:/var/lib/postgresql/data
+  # ── Production HAProxy (Docker-managed) ──────────────────────────────
+  #   docker compose --profile prod up -d haproxy-prod
+  #   Then start the agent on the host with MANAGE_MODE=docker.
+  #
+  #   Uses network_mode: host so HAProxy binds directly to host ports
+  #   (80, 443, 9999).  No port mappings needed — the container shares the
+  #   host network stack.  Stop system HAProxy first if it was running.
+  haproxy-prod:
+    image: haproxy:2.9-alpine
+    profiles: [prod]
+    network_mode: host
+    volumes:
+      - ${HAPROXY_CFG:-/etc/haproxy/haproxy.cfg}:/usr/local/etc/haproxy/haproxy.cfg:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
-# volumes:
-#   pgdata:
+volumes:
+  pgdata:

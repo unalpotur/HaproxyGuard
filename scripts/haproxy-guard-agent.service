@@ -1,0 +1,22 @@
+[Unit]
+Description=HAProxy Guard host agent
+
+# ── systemd mode ──
+# After=network-online.target haproxy.service
+# Wants=network-online.target
+
+# ── Docker mode ──
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Needs to write /etc/haproxy and reload the service (systemd mode) or
+# docker exec / docker cp / docker kill (Docker mode).
+EnvironmentFile=/etc/haproxy-guard-agent.env
+ExecStart=/usr/bin/python3 /opt/haproxy-guard/haproxy_guard_agent.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

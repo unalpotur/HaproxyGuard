@@ -17,7 +17,7 @@ SHOW_STAT = (
 SHOW_INFO = "Name: HAProxy\nVersion: 2.9.6\nUptime_sec: 120\n"
 
 
-def test_parse_show_stat():
+async def test_parse_show_stat():
     rows = parse_show_stat(SHOW_STAT)
     assert len(rows) == 3
     assert rows[0]["pxname"] == "web"
@@ -26,12 +26,12 @@ def test_parse_show_stat():
     assert rows[2]["hrsp_5xx"] == "2"
 
 
-def test_parse_show_stat_rejects_garbage():
+async def test_parse_show_stat_rejects_garbage():
     with pytest.raises(StatsClientError):
         parse_show_stat("not csv output")
 
 
-def test_parse_show_info():
+async def test_parse_show_info():
     info = parse_show_info(SHOW_INFO)
     assert info["Version"] == "2.9.6"
     assert info["Uptime_sec"] == "120"
