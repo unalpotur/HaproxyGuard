@@ -31,8 +31,9 @@ Docker mode:
 
 Common:
     INTERVAL           Seconds between heartbeats      (default: 10)
-    AGENT_VERSION      Reported agent version          (default: 2.1.0)
+    AGENT_VERSION      Reported agent version          (default: 2.2.0)
     CERT_DIR           Directory for cert files        (default: /etc/haproxy/certs)
+    STATS_SOCKET       HAProxy stats socket override   (default: parsed from config)
 
 Auto-enrollment — set ENROLL_KEY instead of NODE_ID / NODE_TOKEN:
     ENROLL_KEY         Pre-shared key (HG_ADMIN_KEY on control plane)
@@ -57,7 +58,7 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = os.environ.get("AGENT_VERSION", "2.1.0")
+AGENT_VERSION = os.environ.get("AGENT_VERSION", "2.3.0")
 _VERSION_RE = re.compile(r"HAProxy version (\S+)")
 _STATE_FILE = os.path.join(os.path.expanduser("~"), ".haproxy-guard-agent", "state.json")
 
@@ -107,6 +108,157 @@ def _parse_labels(raw: str) -> dict[str, str]:
             k, v = part.split("=", 1)
             labels[k.strip()] = v.strip()
     return labels
+
+
+# ── live metrics (HAProxy runtime API) ────────────────────────────────────
+# Read `show stat` from this node's local stats socket and ship a compact
+# summary in each heartbeat so the control plane can show per-node metrics.
+
+_STAT_FIELDS = ("pxname", "svname", "type", "status", "scur", "rate", "req_rate",
+                "hrsp_2xx", "hrsp_4xx", "hrsp_5xx", "rtime", "check_status")
+
+
+def find_stats_socket(cfg_path: str) -> str | None:
+    """Locate the HAProxy stats socket: STATS_SOCKET env, the `stats socket`
+    line in the config, or a common default path."""
+    env = os.environ.get("STATS_SOCKET")
+    if env:
+        return env
+    try:
+        with open(cfg_path) as f:
+            for line in f:
+                s = line.strip()
+                if s.startswith("stats socket"):
+                    parts = s.split()
+                    if len(parts) >= 3:
+                        return parts[2]
+    except OSError:
+        pass
+    for p in ("/var/lib/haproxy/stats", "/run/haproxy/admin.sock",
+              "/var/run/haproxy/admin.sock"):
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _stats_raw(addr: str, command: str = "show stat", timeout: float = 5.0) -> str:
+    """Send a runtime-API command over a unix or TCP stats socket."""
+    sock = None
+    try:
+        if addr.startswith(("ipv4@", "ipv6@", "tcp@", "tcp4@", "tcp6@")):
+            host, _, port = addr.split("@", 1)[1].rpartition(":")
+            host = host or "127.0.0.1"
+            if host in ("0.0.0.0", "*", "::"):
+                host = "127.0.0.1"
+            sock = socket.create_connection((host, int(port)), timeout)
+        else:
+            path = addr[len("unix@"):] if addr.startswith("unix@") else addr
+            if not path.startswith("/") and ":" in path:
+                host, _, port = path.rpartition(":")
+                sock = socket.create_connection((host or "127.0.0.1", int(port)), timeout)
+            else:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sock.settimeout(timeout)
+                sock.connect(path)
+        sock.sendall(command.encode() + b"\n")
+        sock.settimeout(timeout)
+        chunks = []
+        while True:
+            data = sock.recv(65536)
+            if not data:
+                break
+            chunks.append(data)
+        return b"".join(chunks).decode(errors="replace")
+    except (OSError, ValueError):
+        return ""
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
+def parse_stat_csv(raw: str, limit: int = 300) -> list[dict]:
+    """Parse `show stat` CSV into a compact list of rows."""
+    lines = [l for l in raw.splitlines() if l.strip()]
+    if not lines or not lines[0].startswith("# "):
+        return []
+    fields = lines[0][2:].rstrip(",").split(",")
+    out: list[dict] = []
+    for line in lines[1:limit + 1]:
+        vals = line.rstrip(",").split(",")
+        row = dict(zip(fields, vals))
+        out.append({k: row.get(k, "") for k in _STAT_FIELDS})
+    return out
+
+
+def collect_metrics(stats_addr: str | None) -> dict:
+    if not stats_addr:
+        return {}
+    rows = parse_stat_csv(_stats_raw(stats_addr))
+    return {"stat": rows, "ts": time.time()} if rows else {}
+
+
+# ── auxiliary file references (certs, maps, errorfiles) ───────────────────
+# A config can depend on external files that must also exist on the target.
+# We detect, bundle and write them — constrained to a safe set of roots.
+
+_FILE_REF_PATTERNS = (
+    re.compile(r"\bcrt-list\s+(/\S+)"),
+    re.compile(r"\bcrt\s+(/\S+)"),
+    re.compile(r"\bca-file\s+(/\S+)"),
+    re.compile(r"\bca-verify-file\s+(/\S+)"),
+    re.compile(r"\bcrl-file\s+(/\S+)"),
+    re.compile(r"\berrorfile\s+\d+\s+(/\S+)"),
+    re.compile(r"\blua-load\s+(/\S+)"),
+    re.compile(r"\bmap\w*\(\s*(/[^,)\s]+)"),
+)
+_ALLOWED_ROOTS = ("/etc/haproxy/", "/var/lib/haproxy/", "/opt/haproxy-guard/", "/etc/ssl/")
+
+
+def _is_allowed(path: str) -> bool:
+    if not path.startswith("/") or ".." in path.split("/"):
+        return False
+    return any(path.startswith(r) for r in _ALLOWED_ROOTS)
+
+
+def _extract_file_refs(config: str) -> list[str]:
+    refs: set[str] = set()
+    for raw in config.splitlines():
+        line = raw.split("#", 1)[0]
+        if not line.strip():
+            continue
+        for pat in _FILE_REF_PATTERNS:
+            for m in pat.finditer(line):
+                refs.add(m.group(1).rstrip(",;"))
+    return sorted(refs)
+
+
+def _read_b64(path: str) -> str | None:
+    try:
+        with open(path, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    except OSError:
+        return None
+
+
+def write_aux_files(files: dict | None) -> None:
+    """Write auxiliary files (path -> base64) before applying a config."""
+    for path, b64 in (files or {}).items():
+        if not _is_allowed(path):
+            print(f"[agent] skipping unsafe aux path: {path}", file=sys.stderr)
+            continue
+        try:
+            data = base64.b64decode(b64)
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(data)
+            print(f"[agent] wrote aux file {path} ({len(data)} bytes)")
+        except (OSError, ValueError) as exc:
+            print(f"[agent] failed to write {path}: {exc}", file=sys.stderr)
 
 
 # ── state persistence ────────────────────────────────────────────────────
@@ -316,6 +468,36 @@ def _action_config_get(params: dict | None = None) -> tuple[bool, str]:
         return False, str(e)
 
 
+def _action_config_bundle(params: dict | None = None) -> tuple[bool, str]:
+    """Return the config plus every external file it references (certs, maps,
+    errorfiles) so it can be redeployed to another host. Output is base64 of
+    JSON: {"config": <b64>, "files": {path: <b64>}}."""
+    cfg_path = os.environ.get("HAPROXY_CFG", "/etc/haproxy/haproxy.cfg")
+    try:
+        with open(cfg_path, "rb") as f:
+            cfg = f.read()
+    except OSError as e:
+        return False, str(e)
+
+    files: dict[str, str] = {}
+    for ref in _extract_file_refs(cfg.decode(errors="replace")):
+        if not _is_allowed(ref):
+            continue
+        b64 = _read_b64(ref)
+        if b64 is not None:
+            files[ref] = b64
+        elif os.path.isdir(ref):  # crt directories: bundle each file inside
+            for name in sorted(os.listdir(ref)):
+                fp = os.path.join(ref, name)
+                if os.path.isfile(fp):
+                    inner = _read_b64(fp)
+                    if inner is not None:
+                        files[fp] = inner
+
+    bundle = {"config": base64.b64encode(cfg).decode(), "files": files}
+    return True, base64.b64encode(json.dumps(bundle).encode()).decode()
+
+
 def _action_cert_list() -> tuple[bool, str]:
     cert_dir = os.environ.get("CERT_DIR", "/etc/haproxy/certs")
     try:
@@ -375,6 +557,7 @@ _ACTIONS = {
     "stop": _action_stop,
     "start": _action_start,
     "config-get": _action_config_get,
+    "config-bundle": _action_config_bundle,
     "cert-list": _action_cert_list,
     "cert-upload": _action_cert_upload,
     "cert-delete": _action_cert_delete,
@@ -445,6 +628,8 @@ def main() -> int:
 
     cfg_path = os.environ.get("HAPROXY_CFG", "/etc/haproxy/haproxy.cfg")
     interval = float(os.environ.get("INTERVAL", "10"))
+    stats_addr = find_stats_socket(cfg_path)
+    print(f"[agent] stats socket: {stats_addr or 'not found — metrics disabled'}")
 
     if _MODE == "systemd":
         reload_cmd = shlex.split(os.environ.get("RELOAD_CMD", "systemctl reload haproxy"))
@@ -484,6 +669,7 @@ def main() -> int:
             "config_version": current_version,
             "config_hash": config_hash(current_content),
             "service_status": service_status,
+            "metrics": collect_metrics(stats_addr),
         }
         if last_action_result:
             payload["last_action"] = last_action_result
@@ -516,6 +702,9 @@ def main() -> int:
 
         elif decision == "apply":
             desired = reply["desired_config"]
+            # Write referenced files (certs/maps/errorfiles) first so that
+            # `haproxy -c` validation can open them.
+            write_aux_files(reply.get("desired_files"))
             ok, msg = validate_fn(desired)
             if not ok:
                 print(f"[agent] desired config failed validation, "

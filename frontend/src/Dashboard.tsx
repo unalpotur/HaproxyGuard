@@ -1,4 +1,108 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { clusterNodes, clusterOverview, type ClusterNode, type ClusterOverview } from './api'
+
+const NODE_STATUS_COLOR: Record<string, string> = {
+  online: '#22c55e', offline: '#ef4444', pending: '#f59e0b',
+}
+const NODE_SVC_COLOR: Record<string, string> = {
+  running: '#22c55e', stopped: '#ef4444', unknown: '#64748b',
+}
+
+function ClusterNodesCard() {
+  const [nodes, setNodes] = useState<ClusterNode[]>([])
+  const [ov, setOv] = useState<ClusterOverview | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const [n, o] = await Promise.all([clusterNodes(), clusterOverview()])
+        setNodes(n); setOv(o); setErr(null)
+      } catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
+    }
+    void load()
+    const t = setInterval(() => void load(), 5000)
+    return () => clearInterval(t)
+  }, [])
+
+  return (
+    <>
+      <div className="dash-card">
+        <div className="dash-card-head">
+          <h4>Cluster nodes</h4>
+          {ov && (
+            <div className="cluster-overview">
+              <span className="stat"><b>{ov.total}</b> total</span>
+              <span className="stat on"><b>{ov.online}</b> online</span>
+              <span className="stat off"><b>{ov.offline}</b> offline</span>
+              <span className="stat pend"><b>{ov.pending}</b> pending</span>
+            </div>
+          )}
+        </div>
+        {err && <p className="error-inline">{err}</p>}
+        {!err && nodes.length === 0 && <p className="empty" style={{ padding: 12 }}>No nodes enrolled yet.</p>}
+        {nodes.length > 0 && (
+          <div className="node-grid">
+            {nodes.map((n) => (
+              <div className={`node-card ${n.status}`} key={n.id}>
+                <div className="node-card-top">
+                  <span className="dot" style={{ background: NODE_STATUS_COLOR[n.status] ?? '#64748b' }} />
+                  <strong>{n.name}</strong>
+                  <span className="node-card-status">{n.status}</span>
+                </div>
+                <small className="node-card-addr">{n.address}</small>
+                <div className="node-card-meta">
+                  <span>HAProxy <b>{n.haproxy_version ?? '—'}</b></span>
+                  <span>agent <b>{n.agent_version ?? '—'}</b></span>
+                  <span>
+                    svc <b style={{ color: NODE_SVC_COLOR[n.service_status] ?? '#94a3b8' }}>{n.service_status}</b>
+                  </span>
+                  <span>ver <b>{n.applied_version ?? '–'}/{n.pending_version ?? '–'}</b></span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Per-node live metrics, collected by each agent from its local HAProxy */}
+      {nodes.map((n) => {
+        const stat = (n.metrics as { stat?: StatRow[] } | undefined)?.stat
+        const rows = (stat ?? []).filter((r) => r.svname === 'FRONTEND' || r.svname === 'BACKEND')
+        if (rows.length === 0) return null
+        return (
+          <div className="dash-card" key={`m-${n.id}`}>
+            <div className="dash-card-head">
+              <h4>{n.name} · live metrics</h4>
+              <small>{n.address} · {rows.length} proxies</small>
+            </div>
+            <table>
+              <thead>
+                <tr><th>Proxy</th><th>Type</th><th>Status</th><th>Sessions</th>
+                  <th>Rate</th><th>2xx</th><th>4xx</th><th>5xx</th><th>rtime</th></tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={`${r.pxname}-${r.svname}-${i}`}>
+                    <td>{r.pxname}</td>
+                    <td>{r.svname}</td>
+                    <td><span className="dot" style={{ background: STATUS_COLOR(r.status) }} /> {r.status}</td>
+                    <td>{r.scur}</td>
+                    <td>{r.rate || r.req_rate}</td>
+                    <td>{r.hrsp_2xx}</td>
+                    <td>{r.hrsp_4xx}</td>
+                    <td className={Number(r.hrsp_5xx) > 0 ? 'warn' : ''}>{r.hrsp_5xx}</td>
+                    <td>{r.rtime ? `${r.rtime}ms` : '–'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      })}
+    </>
+  )
+}
 
 interface StatRow {
   pxname: string
@@ -93,70 +197,80 @@ export default function Dashboard() {
     localStorage.setItem(TOKEN_KEY, v)
   }
 
-  if (needToken) {
-    return (
-      <div className="dashboard" style={{ padding: '2rem' }}>
-        <p>RBAC aktif — WebSocket'a bağlanmak için API token gerekli.</p>
-        <p style={{ color: '#64748b' }}>HG_ADMIN_KEY ile aynı değeri girin, veya Admin panelinden bir token oluşturun.</p>
-        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-          <input
-            type="password" value={token} autoFocus
-            onChange={(e) => saveToken(e.target.value)}
-            placeholder="API token…"
-            style={{ flex: 1 }}
-          />
-          <button onClick={connect}>Bağlan</button>
+  const metricsBody = () => {
+    if (needToken) {
+      return (
+        <div style={{ padding: 12 }}>
+          <p>RBAC aktif — WebSocket'a bağlanmak için API token gerekli.</p>
+          <p style={{ color: '#64748b' }}>HG_ADMIN_KEY ile aynı değeri girin, veya Admin panelinden bir token oluşturun.</p>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <input
+              type="password" value={token} autoFocus
+              onChange={(e) => saveToken(e.target.value)}
+              placeholder="API token…"
+              style={{ flex: 1 }}
+            />
+            <button onClick={connect}>Bağlan</button>
+          </div>
         </div>
-      </div>
+      )
+    }
+    if (error && !snapshot?.rows?.length) return <p className="error-inline" style={{ padding: 12 }}>{error}</p>
+    if (!snapshot) return <p className="empty" style={{ padding: 12 }}>{connected ? 'Waiting for first snapshot…' : 'Connecting…'}</p>
+
+    const rows = snapshot.rows.filter((r) => r.svname === 'FRONTEND' || r.svname === 'BACKEND' || r.type === '2')
+    return (
+      <>
+        <div className="dash-status">
+          <span className="badge" style={{ background: connected ? '#16a34a' : '#dc2626' }}>
+            {connected ? 'live' : 'disconnected'}
+          </span>
+          <small>{new Date(snapshot.timestamp * 1000).toLocaleTimeString()}</small>
+          {error && <span className="error-inline">{error}</span>}
+          {token && (
+            <button className="ghost" onClick={() => { saveToken(''); setNeedToken(false) }} title="Clear token"
+                    style={{ padding: '2px 8px' }}>✕</button>
+          )}
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Proxy</th><th>Member</th><th>Status</th><th>Sessions</th>
+              <th>Rate</th><th>Rate (60s)</th><th>2xx</th><th>4xx</th><th>5xx</th><th>rtime</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const key = `${r.pxname}/${r.svname}`
+              return (
+                <tr key={key}>
+                  <td>{r.pxname}</td>
+                  <td>{r.svname}</td>
+                  <td><span className="dot" style={{ background: STATUS_COLOR(r.status) }} /> {r.status}</td>
+                  <td>{r.scur}</td>
+                  <td>{r.rate || r.req_rate}</td>
+                  <td><Sparkline values={historyRef.current.get(key) ?? []} /></td>
+                  <td>{r.hrsp_2xx}</td>
+                  <td>{r.hrsp_4xx}</td>
+                  <td className={Number(r.hrsp_5xx) > 0 ? 'warn' : ''}>{r.hrsp_5xx}</td>
+                  <td>{r.rtime ? `${r.rtime}ms` : '–'}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </>
     )
   }
 
-  if (error && !snapshot?.rows?.length) return <p className="error">{error}</p>
-  if (!snapshot) return <p className="empty">{connected ? 'Waiting for first snapshot…' : 'Connecting…'}</p>
-
-  const rows = snapshot.rows.filter((r) => r.svname === 'FRONTEND' || r.svname === 'BACKEND' || r.type === '2')
-
   return (
     <div className="dashboard">
-      <div className="dash-status">
-        <span className="badge" style={{ background: connected ? '#16a34a' : '#dc2626' }}>
-          {connected ? 'live' : 'disconnected'}
-        </span>
-        <small>{new Date(snapshot.timestamp * 1000).toLocaleTimeString()}</small>
-        {error && <span className="error-inline">{error}</span>}
-        {token && (
-          <button className="small" onClick={() => { saveToken(''); setNeedToken(false) }} title="Clear token">
-            ✕
-          </button>
-        )}
+      <ClusterNodesCard />
+      <div className="dash-card">
+        <div className="dash-card-head"><h4>Control plane HAProxy</h4>
+          <small>local stats socket (HAPROXY_STATS_ADDR)</small></div>
+        {metricsBody()}
       </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Proxy</th><th>Member</th><th>Status</th><th>Sessions</th>
-            <th>Rate</th><th>Rate (60s)</th><th>2xx</th><th>4xx</th><th>5xx</th><th>rtime</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => {
-            const key = `${r.pxname}/${r.svname}`
-            return (
-              <tr key={key}>
-                <td>{r.pxname}</td>
-                <td>{r.svname}</td>
-                <td><span className="dot" style={{ background: STATUS_COLOR(r.status) }} /> {r.status}</td>
-                <td>{r.scur}</td>
-                <td>{r.rate || r.req_rate}</td>
-                <td><Sparkline values={historyRef.current.get(key) ?? []} /></td>
-                <td>{r.hrsp_2xx}</td>
-                <td>{r.hrsp_4xx}</td>
-                <td className={Number(r.hrsp_5xx) > 0 ? 'warn' : ''}>{r.hrsp_5xx}</td>
-                <td>{r.rtime ? `${r.rtime}ms` : '–'}</td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
     </div>
   )
 }

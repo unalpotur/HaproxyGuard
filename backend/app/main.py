@@ -633,7 +633,46 @@ async def cluster_deploy(
 ) -> cl.DeployResult:
     await require(principal, "operator", "cluster.deploy",
                   ",".join(body.node_ids) if body.node_ids else str(body.selector))
-    return await registry.deploy(body.content, body.node_ids, body.selector, body.validate_config)
+    return await registry.deploy(body.content, body.node_ids, body.selector,
+                                 body.validate_config, body.files)
+
+
+@app.post("/api/cluster/deploy/check", response_model=cl.DeployCheck)
+def cluster_deploy_check(body: cl.DeployCheckInput) -> cl.DeployCheck:
+    """Pre-deploy lint: list external files the config needs (certs, maps,
+    errorfiles, …) and warn about any we cannot ship to the target."""
+    from .cluster.files import extract_file_refs
+    refs = extract_file_refs(body.content)
+    have = set(body.provided_files)
+
+    def covered(ref: str) -> bool:
+        # exact match, or a directory ref for which we hold a file underneath
+        return ref in have or any(h.startswith(ref.rstrip("/") + "/") for h in have)
+
+    provided = [r for r in refs if covered(r)]
+    missing = [r for r in refs if not covered(r)]
+
+    findings = analyze(parse_config(body.content))
+    summary: dict[str, int] = {}
+    for f in findings:
+        summary[f.severity] = summary.get(f.severity, 0) + 1
+
+    warnings: list[str] = []
+    if missing:
+        warnings.append(
+            "Bu config şu harici dosyalara bağımlı ve elimizde yok: "
+            + ", ".join(missing)
+            + ". Hedef node'da bu dosyalar yoksa 'haproxy -c' başarısız olur. "
+            "Önce kaynak node'dan 'Fetch config' ile çekerseniz dosyalar da gelir."
+        )
+    if provided:
+        warnings.append("Şu dosyalar config ile birlikte gönderilecek: " + ", ".join(provided))
+    critical = summary.get("critical", 0) + summary.get("high", 0)
+    if critical:
+        warnings.append(f"{critical} yüksek/kritik bulgu var — Findings sekmesine bakın.")
+
+    return cl.DeployCheck(file_refs=refs, provided=provided, missing=missing,
+                          warnings=warnings, findings_summary=summary)
 
 
 @app.post("/api/cluster/nodes/{node_id}/rollback", response_model=cl.Deployment)

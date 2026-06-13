@@ -7,6 +7,7 @@ import SslPanel from './SslPanel'
 import SecurityPanel from './SecurityPanel'
 import AssistantPanel from './AssistantPanel'
 import ClusterPanel from './ClusterPanel'
+import BuilderPanel from './BuilderPanel'
 import AlertsPanel from './AlertsPanel'
 import AuditPanel from './AuditPanel'
 import VersionsPanel from './VersionsPanel'
@@ -30,7 +31,7 @@ backend api_servers
     server api1 10.0.1.11:9000 check
 `
 
-type Tab = 'topology' | 'findings' | 'ssl' | 'security' | 'assistant' | 'cluster' | 'alerts' | 'audit' | 'versions' | 'dashboard'
+type Tab = 'builder' | 'topology' | 'findings' | 'ssl' | 'security' | 'assistant' | 'cluster' | 'alerts' | 'audit' | 'versions' | 'dashboard'
 
 export default function App() {
   const [config, setConfig] = useState(SAMPLE)
@@ -92,6 +93,9 @@ export default function App() {
         </section>
         <section className="results">
           <nav>
+            <button className={tab === 'builder' ? 'active' : ''} onClick={() => setTab('builder')}>
+              Builder
+            </button>
             <button className={tab === 'topology' ? 'active' : ''} onClick={() => setTab('topology')}>
               Topology
             </button>
@@ -125,6 +129,10 @@ export default function App() {
           </nav>
           <div className="panel">
             {error && <p className="error">{error}</p>}
+            {!error && tab === 'builder' && (
+              <BuilderPanel config={config}
+                onApply={(c, go) => { setConfig(c); void run(c); if (go) setTab('cluster') }} />
+            )}
             {!error && tab === 'topology' && (graph ? <TopologyView graph={graph} /> : <p className="empty">Click “Parse &amp; Analyze” to render the topology.</p>)}
             {!error && tab === 'findings' && (analysis ? (
               <>

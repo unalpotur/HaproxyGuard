@@ -165,6 +165,8 @@ class ClusterNodeRow(Base):
     token_hash: Mapped[str] = mapped_column(String(64))
     version_counter: Mapped[int] = mapped_column(Integer, default=0)
     desired_config: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # auxiliary files (certs, maps, errorfiles) to write before applying config
+    desired_files: Mapped[dict | None] = mapped_column(_JSON, nullable=True)
     pending_action: Mapped[dict | None] = mapped_column(_JSON, nullable=True)
     ssh_host: Mapped[str | None] = mapped_column(String(256), nullable=True)
     ssh_user: Mapped[str | None] = mapped_column(String(128), nullable=True)

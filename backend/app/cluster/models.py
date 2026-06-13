@@ -59,11 +59,27 @@ class DeployInput(BaseModel):
     node_ids: list[str] | None = None
     selector: dict[str, str] | None = None  # label match, e.g. {"role": "edge"}
     validate_config: bool = True
+    # auxiliary files to write on the target before applying: path -> base64
+    files: dict[str, str] = Field(default_factory=dict)
 
 
 class DeployResult(BaseModel):
     deployments: list[Deployment] = Field(default_factory=list)
     skipped: list[str] = Field(default_factory=list)  # node ids that failed validation
+
+
+class DeployCheckInput(BaseModel):
+    content: str
+    provided_files: list[str] = Field(default_factory=list)  # paths already in hand
+
+
+class DeployCheck(BaseModel):
+    """Pre-deploy lint: which external files the config needs, and warnings."""
+    file_refs: list[str] = Field(default_factory=list)     # all referenced paths
+    provided: list[str] = Field(default_factory=list)      # refs we can ship
+    missing: list[str] = Field(default_factory=list)       # refs we don't have
+    warnings: list[str] = Field(default_factory=list)
+    findings_summary: dict[str, int] = Field(default_factory=dict)
 
 
 class HeartbeatInput(BaseModel):
@@ -79,6 +95,7 @@ class HeartbeatInput(BaseModel):
 class HeartbeatResult(BaseModel):
     desired_version: int | None = None
     desired_config: str | None = None  # populated only when the agent is behind
+    desired_files: dict | None = None  # path -> base64, written before applying config
     action: dict | None = None  # pending action {type, params} for the agent to execute
 
 

@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type CSSProperties } from 'react'
 import {
-  clusterNodes, clusterOverview, clusterEnroll, clusterDeploy, clusterRollback,
-  clusterRemove, agentHeartbeat, nodeAction,
+  clusterNodes, clusterOverview, clusterEnroll, clusterDeploy, clusterDeployCheck,
+  clusterRollback, clusterRemove, agentHeartbeat, nodeAction,
   type ClusterNode, type ClusterOverview,
 } from './api'
+
+const shortPath = (p: string) => p.split('/').pop() || p
 
 const STATUS_COLOR: Record<string, string> = {
   online: '#16a34a', offline: '#dc2626', pending: '#ca8a04',
@@ -39,6 +41,9 @@ export default function ClusterPanel({ config, onConfigChange }: { config: strin
   // The node we are currently fetching config from, plus the timestamp of its
   // previous action result — so we only adopt a result newer than that.
   const [fetching, setFetching] = useState<{ id: string; since: number } | null>(null)
+  // Auxiliary files (certs/maps/errorfiles) captured with the last fetched
+  // config, shipped alongside it on the next deploy. path -> base64.
+  const [bundleFiles, setBundleFiles] = useState<Record<string, string>>({})
 
   const refresh = useCallback(async () => {
     try {
@@ -73,8 +78,27 @@ export default function ClusterPanel({ config, onConfigChange }: { config: strin
 
   const deploy = () => guard(async () => {
     if (selected.size === 0) throw new Error('select at least one node')
-    const res = await clusterDeploy(config, [...selected], true)
+    // Pre-deploy lint: which external files does the config need, do we have them?
+    const check = await clusterDeployCheck(config, Object.keys(bundleFiles))
+    if (check.missing.length) {
+      const ok = window.confirm(
+        'Uyarı — bu config şu harici dosyalara bağımlı ve elimizde yok:\n  ' +
+        check.missing.join('\n  ') +
+        "\n\nHedef node'larda bu dosyalar yoksa deploy 'haproxy -c' ile başarısız olur." +
+        "\nİpucu: önce kaynak node'da 'Fetch config' (📋) ile çekerseniz dosyalar da gelir." +
+        '\n\nYine de devam edilsin mi?')
+      if (!ok) { setNotice('Deploy iptal edildi.'); return }
+    }
+    // Ship only the files this config actually references (incl. cert dirs).
+    const filesToSend: Record<string, string> = {}
+    for (const [p, b64] of Object.entries(bundleFiles)) {
+      if (check.file_refs.some((ref) => p === ref || (ref.endsWith('/') && p.startsWith(ref))))
+        filesToSend[p] = b64
+    }
+    const res = await clusterDeploy(config, [...selected], true, filesToSend)
+    const nf = Object.keys(filesToSend).length
     setNotice(`Deployed to ${res.deployments.length} node(s)` +
+      (nf ? ` (+${nf} dosya: ${Object.keys(filesToSend).map(shortPath).join(', ')})` : '') +
       (res.skipped.length ? `, ${res.skipped.length} failed validation` : ''))
   })
 
@@ -95,32 +119,40 @@ export default function ClusterPanel({ config, onConfigChange }: { config: strin
       setNotice(`Action '${actionType}' queued — executes on next agent heartbeat`)
     })
 
-  // Fetch the live config from a specific node into the editor. We queue the
-  // action and remember which node we asked (and the timestamp of its last
-  // result) so the effect below adopts only the fresh result for that node.
+  // Fetch the live config + its referenced files (certs/maps/errorfiles) from a
+  // node into the editor. We queue the action and remember which node we asked
+  // (and the timestamp of its last result) so the effect below adopts only the
+  // fresh result for that node.
   const fetchConfig = (n: ClusterNode) => guard(async () => {
     const since = (n.last_action_result?._ts as number | undefined) ?? 0
-    await nodeAction(n.id, 'config-get', {})
+    await nodeAction(n.id, 'config-bundle', {})
     setFetching({ id: n.id, since })
     setNotice(`Fetching config from ${n.name} — applies on next agent heartbeat`)
   })
 
-  // Adopt a config-get result only once, only for the node we explicitly asked,
-  // and only when it is newer than the request. This prevents the 5s refresh
-  // loop from continuously overwriting the editor with a stale result.
+  // Adopt a config-bundle result only once, only for the node we explicitly
+  // asked, and only when it is newer than the request. This prevents the 5s
+  // refresh loop from continuously overwriting the editor with a stale result.
   useEffect(() => {
     if (!fetching) return
     const n = nodes.find((x) => x.id === fetching.id)
     const r = n?.last_action_result
-    if (!r || r.type !== 'config-get') return
+    if (!r || r.type !== 'config-bundle') return
     if (((r._ts as number | undefined) ?? 0) <= fetching.since) return
     if (r.ok && r.output && onConfigChange) {
       try {
-        onConfigChange(atob(r.output as string))
-        setNotice(`Config fetched from ${n!.name} into the editor`)
-      } catch { setError('failed to decode fetched config') }
+        const bundle = JSON.parse(atob(r.output as string)) as
+          { config: string; files: Record<string, string> }
+        onConfigChange(atob(bundle.config))
+        setBundleFiles(bundle.files || {})
+        const fileNames = Object.keys(bundle.files || {})
+        setNotice(`Config fetched from ${n!.name}` +
+          (fileNames.length
+            ? ` with ${fileNames.length} file(s): ${fileNames.map(shortPath).join(', ')}`
+            : ' (no extra files)'))
+      } catch { setError('failed to decode fetched config bundle') }
     } else if (!r.ok) {
-      setError(`config-get failed on ${n!.name}: ${(r.error as string) ?? 'unknown error'}`)
+      setError(`config-bundle failed on ${n!.name}: ${(r.error as string) ?? 'unknown error'}`)
     }
     setFetching(null)
   }, [nodes, fetching, onConfigChange])
@@ -142,72 +174,89 @@ export default function ClusterPanel({ config, onConfigChange }: { config: strin
         </div>
       )}
 
-      <div className="enroll-row">
-        <input placeholder="name" value={name} onChange={(e) => setName(e.target.value)} />
-        <input placeholder="address" value={address}
-               onChange={(e) => setAddress(e.target.value)} />
-        <input placeholder="labels k=v,k=v" value={labels}
-               onChange={(e) => setLabels(e.target.value)} />
-        <input placeholder="SSH host (IP)" value={sshHost}
-               onChange={(e) => setSshHost(e.target.value)} />
-        <input placeholder="SSH user" value={sshUser}
-               onChange={(e) => setSshUser(e.target.value)} size={8} />
-        <input placeholder="SSH pass" value={sshPass} type="password"
-               onChange={(e) => setSshPass(e.target.value)} size={12} />
-        <label><input type="checkbox" checked={autoDeploy}
-               onChange={(e) => setAutoDeploy(e.target.checked)} /> auto-deploy</label>
-        <select value={manageMode} onChange={(e) => setManageMode(e.target.value)}
-                style={{ width: 80, marginLeft: 4 }}>
-          <option value="auto">auto</option>
-          <option value="systemd">systemd</option>
-          <option value="docker">docker</option>
-        </select>
-        <button onClick={enroll}>Enroll node</button>
+      <div className="enroll-card">
+        <div className="card-head">
+          <h4>Add a node</h4>
+          <small>Register a HAProxy host. Provide SSH details to auto-install the agent over SSH.</small>
+        </div>
+        <div className="field-grid">
+          <label className="fld"><span>Name</span>
+            <input placeholder="edge-1" value={name} onChange={(e) => setName(e.target.value)} /></label>
+          <label className="fld"><span>Address</span>
+            <input placeholder="192.168.1.10" value={address} onChange={(e) => setAddress(e.target.value)} /></label>
+          <label className="fld"><span>Labels</span>
+            <input placeholder="role=edge,env=prod" value={labels} onChange={(e) => setLabels(e.target.value)} /></label>
+        </div>
+        <div className="field-grid">
+          <label className="fld"><span>SSH host</span>
+            <input placeholder="for auto-install" value={sshHost} onChange={(e) => setSshHost(e.target.value)} /></label>
+          <label className="fld"><span>SSH user</span>
+            <input placeholder="root" value={sshUser} onChange={(e) => setSshUser(e.target.value)} /></label>
+          <label className="fld"><span>SSH password</span>
+            <input type="password" placeholder="••••••" value={sshPass} onChange={(e) => setSshPass(e.target.value)} /></label>
+          <label className="fld"><span>Mode</span>
+            <select value={manageMode} onChange={(e) => setManageMode(e.target.value)}>
+              <option value="auto">auto-detect</option>
+              <option value="systemd">systemd</option>
+              <option value="docker">docker</option>
+            </select></label>
+        </div>
+        <div className="enroll-foot">
+          <label className="chk">
+            <input type="checkbox" checked={autoDeploy} onChange={(e) => setAutoDeploy(e.target.checked)} />
+            <span>Auto-install agent over SSH</span>
+          </label>
+          <button className="primary" onClick={enroll}>Enroll node</button>
+        </div>
       </div>
 
-      <div className="cluster-actions">
-        <button onClick={deploy} disabled={selected.size === 0}>
-          Deploy current config → {selected.size} selected
+      <div className="deploy-bar">
+        <button className="primary" onClick={deploy} disabled={selected.size === 0}>
+          ⬆ Deploy editor config{selected.size > 0 ? ` → ${selected.size} node(s)` : ''}
         </button>
-        <small>Pushes the editor config (validated with <code>haproxy -c</code>) to selected nodes.</small>
+        <small>Validates with <code>haproxy -c</code>, then pushes the editor config to the selected nodes.</small>
       </div>
 
-      <table className="node-table">
-        <thead>
-          <tr><th></th><th>Node</th><th>Agent</th><th>HAProxy</th><th>Version</th><th>Config</th>
-            <th>Ver</th><th>Actions</th></tr>
-        </thead>
-        <tbody>
-          {nodes.length === 0 && <tr><td colSpan={8} className="empty">No nodes enrolled yet.</td></tr>}
-          {nodes.map((n) => (
-            <tr key={n.id}>
-              <td><input type="checkbox" checked={selected.has(n.id)} onChange={() => toggle(n.id)} /></td>
-              <td>
-                <strong>{n.name}</strong><br />
-                <small>{n.address}</small>
-                {Object.entries(n.labels).map(([k, v]) => (
-                  <span key={k} className="label">{k}={v}</span>
-                ))}
-              </td>
-              <td><span className="badge" style={{ background: STATUS_COLOR[n.status] }}>{n.status}</span></td>
-              <td><span className="badge" style={{ background: SVC_COLOR[n.service_status] ?? '#64748b' }}>{n.service_status}</span></td>
-              <td>{n.haproxy_version ?? '—'}</td>
-              <td><code>{n.config_hash ?? '—'}</code></td>
-              <td>{n.applied_version ?? '–'} / {n.pending_version ?? '–'}</td>
-              <td className="node-actions">
-                <button onClick={() => act(n.id, 'restart')} title="Restart HAProxy">↻</button>
-                <button onClick={() => act(n.id, 'stop')} title="Stop HAProxy">■</button>
-                <button onClick={() => act(n.id, 'start')} title="Start HAProxy">▶</button>
-                <button onClick={() => fetchConfig(n)} title="Fetch HAProxy config from node">📋</button>
-                {import.meta.env.DEV && tokens[n.id] &&
-                  <button onClick={() => checkIn(n.id)} title="DEV ONLY: simulate an agent heartbeat with fake version info">Check in</button>}
-                <button onClick={() => guard(() => clusterRollback(n.id).then(() => undefined))}>Rollback</button>
-                <button className="warn" onClick={() => guard(() => clusterRemove(n.id))}>✕</button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="node-wrap">
+        <table className="node-table">
+          <thead>
+            <tr><th></th><th>Node</th><th>Status</th><th>Service</th><th>HAProxy</th><th>Config</th>
+              <th>Ver</th><th>Actions</th></tr>
+          </thead>
+          <tbody>
+            {nodes.length === 0 && <tr><td colSpan={8} className="empty">No nodes enrolled yet.</td></tr>}
+            {nodes.map((n) => (
+              <tr key={n.id}>
+                <td><input type="checkbox" checked={selected.has(n.id)} onChange={() => toggle(n.id)} /></td>
+                <td>
+                  <strong>{n.name}</strong>
+                  <small>{n.address}</small>
+                  {Object.entries(n.labels).map(([k, v]) => (
+                    <span key={k} className="label">{k}={v}</span>
+                  ))}
+                </td>
+                <td><span className="badge" style={{ '--dot': STATUS_COLOR[n.status] } as CSSProperties}>{n.status}</span></td>
+                <td><span className="badge" style={{ '--dot': SVC_COLOR[n.service_status] ?? '#64748b' } as CSSProperties}>{n.service_status}</span></td>
+                <td>{n.haproxy_version ?? '—'}</td>
+                <td><code>{n.config_hash ?? '—'}</code></td>
+                <td>{n.applied_version ?? '–'} / {n.pending_version ?? '–'}</td>
+                <td className="node-actions">
+                  <span className="act-group">
+                    <button className="ico" onClick={() => act(n.id, 'restart')} title="Restart HAProxy">↻</button>
+                    <button className="ico stop" onClick={() => act(n.id, 'stop')} title="Stop HAProxy">■</button>
+                    <button className="ico start" onClick={() => act(n.id, 'start')} title="Start HAProxy">▶</button>
+                  </span>
+                  <button className="ico fetch" onClick={() => fetchConfig(n)} title="Fetch HAProxy config into the editor">📋</button>
+                  {import.meta.env.DEV && tokens[n.id] &&
+                    <button className="ico" onClick={() => checkIn(n.id)} title="DEV ONLY: simulate an agent heartbeat with fake version info">sim</button>}
+                  <button className="ico" onClick={() => guard(() => clusterRollback(n.id).then(() => undefined))} title="Roll back to the previous config">↶</button>
+                  <button className="ico danger" onClick={() => guard(() => clusterRemove(n.id))} title="Remove node">✕</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

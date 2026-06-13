@@ -182,6 +182,7 @@ class ClusterRegistry:
             return HeartbeatResult(
                 desired_version=row.pending_version,
                 desired_config=row.desired_config if behind else None,
+                desired_files=row.desired_files if behind else None,
                 action=row.pending_action,
             )
 
@@ -230,9 +231,11 @@ class ClusterRegistry:
         node_ids: list[str] | None,
         selector: dict[str, str] | None,
         validate_config: bool,
+        files: dict[str, str] | None = None,
     ) -> DeployResult:
         result = DeployResult()
         targets = await self.select(node_ids, selector)
+        files = files or None
 
         validation = validate(content) if validate_config else None
         findings = analyze(parse_config(content))
@@ -259,6 +262,7 @@ class ClusterRegistry:
                 row.version_counter += 1
                 version = row.version_counter
                 row.desired_config = (content or "").rstrip("\n") + "\n"
+                row.desired_files = files
                 row.pending_version = version
                 dep_row = ClusterDeploymentRow(
                     id="dep_" + uuid.uuid4().hex[:10], node_id=nid, version=version,

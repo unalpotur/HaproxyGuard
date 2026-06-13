@@ -232,6 +232,14 @@ export interface DeployResult {
   skipped: string[]
 }
 
+export interface DeployCheck {
+  file_refs: string[]
+  provided: string[]
+  missing: string[]
+  warnings: string[]
+  findings_summary: Record<string, number>
+}
+
 export interface ClusterOverview {
   total: number
   online: number
@@ -306,6 +314,19 @@ export interface VersionContent {
 
 function getApiKey(): string | null {
   return localStorage.getItem('hg_api_key')
+}
+
+// Auth header for GET requests to RBAC-protected endpoints (audit, whoami,
+// versions, …). Without it those return 401 when HG_ADMIN_KEY is set.
+function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const key = getApiKey()
+  return key ? { ...extra, 'X-API-Key': key } : { ...extra }
+}
+
+async function getJson<T>(path: string): Promise<T> {
+  const res = await fetch(path, { headers: authHeaders() })
+  if (!res.ok) throw new Error(`${path} failed: ${res.status}`)
+  return res.json()
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
@@ -389,8 +410,12 @@ export const clusterEnroll = (name: string, address: string, labels: Record<stri
   postJson<EnrollResponse>('/api/cluster/nodes',
     { name, address, labels, ssh_host: sshHost, ssh_user: sshUser, ssh_password: sshPassword, auto_deploy: autoDeploy, manage_mode: manageMode })
 
-export const clusterDeploy = (content: string, node_ids: string[], validate_config: boolean) =>
-  postJson<DeployResult>('/api/cluster/deploy', { content, node_ids, validate_config })
+export const clusterDeploy = (content: string, node_ids: string[], validate_config: boolean,
+  files: Record<string, string> = {}) =>
+  postJson<DeployResult>('/api/cluster/deploy', { content, node_ids, validate_config, files })
+
+export const clusterDeployCheck = (content: string, provided_files: string[]) =>
+  postJson<DeployCheck>('/api/cluster/deploy/check', { content, provided_files })
 
 export const clusterRollback = (nodeId: string) =>
   postJson<ClusterDeployment>(`/api/cluster/nodes/${nodeId}/rollback`, {})
@@ -419,36 +444,21 @@ export const addAlertChannel = (name: string, type: string, url: string, min_sev
   postJson<AlertChannel>('/api/alerts/channels', { name, type, url, min_severity })
 
 export const removeAlertChannel = async (id: string): Promise<void> => {
-  const res = await fetch(`/api/alerts/channels/${id}`, { method: 'DELETE' })
+  const res = await fetch(`/api/alerts/channels/${id}`, { method: 'DELETE', headers: authHeaders() })
   if (!res.ok) throw new Error(`delete failed: ${res.status}`)
 }
 
-export const whoami = async (): Promise<Principal> => {
-  const res = await fetch('/api/auth/whoami')
-  if (!res.ok) throw new Error(`/api/auth/whoami failed: ${res.status}`)
-  return res.json()
-}
+export const whoami = () => getJson<Principal>('/api/auth/whoami')
 
-export const auditLog = async (limit = 200): Promise<AuditEntry[]> => {
-  const res = await fetch(`/api/audit?limit=${limit}`)
-  if (!res.ok) throw new Error(`/api/audit failed: ${res.status}`)
-  return res.json()
-}
+export const auditLog = (limit = 200) => getJson<AuditEntry[]>(`/api/audit?limit=${limit}`)
 
-export const listVersions = async (): Promise<ConfigVersion[]> => {
-  const res = await fetch('/api/versions')
-  if (!res.ok) throw new Error(`/api/versions failed: ${res.status}`)
-  return res.json()
-}
+export const listVersions = () => getJson<ConfigVersion[]>('/api/versions')
 
 export const saveVersion = (content: string, label: string, message: string) =>
   postJson<ConfigVersion>('/api/versions', { content, label, message })
 
-export const versionDiff = async (a: string, b: string): Promise<{ a: string; b: string; diff: string }> => {
-  const res = await fetch(`/api/versions/diff?a=${a}&b=${b}`)
-  if (!res.ok) throw new Error(`diff failed: ${res.status}`)
-  return res.json()
-}
+export const versionDiff = (a: string, b: string) =>
+  getJson<{ a: string; b: string; diff: string }>(`/api/versions/diff?a=${a}&b=${b}`)
 
 export const restoreVersion = (id: string) =>
   postJson<VersionContent>(`/api/versions/${id}/restore`, {})
