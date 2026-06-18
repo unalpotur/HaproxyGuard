@@ -592,9 +592,12 @@ def _action_cert_issue(params: dict) -> tuple[bool, str]:
     must route /.well-known/acme-challenge/ to that port. Override the whole
     flow with CERTBOT_EXTRA.
     """
-    certbot = shutil.which("certbot")
+    # systemd's PATH often omits /snap/bin, so look there explicitly too.
+    certbot = (os.environ.get("CERTBOT_BIN") or shutil.which("certbot")
+               or next((p for p in ("/snap/bin/certbot", "/usr/bin/certbot",
+                                     "/usr/local/bin/certbot") if os.path.exists(p)), None))
     if not certbot:
-        return False, "certbot is not installed on this host"
+        return False, "certbot not found (set CERTBOT_BIN or install certbot)"
     raw = params.get("domains") or ""
     domains = raw if isinstance(raw, list) else [d.strip() for d in str(raw).split(",")]
     domains = [d for d in domains if d]
