@@ -614,11 +614,18 @@ def _action_cert_issue(params: dict) -> tuple[bool, str]:
     else:
         challenge = ["--standalone", "--http-01-port",
                      os.environ.get("CERTBOT_HTTP_PORT", "8888")]
-    cmd = [certbot, "certonly", "-n", "--agree-tos", "-m", email, *challenge]
+    # Pin a deterministic lineage (named after the primary domain) and allow
+    # expanding it without the interactive prompt — non-interactive (-n) certbot
+    # errors out on that prompt otherwise.
+    primary = domains[0]
+    cmd = [certbot, "certonly", "-n", "--agree-tos", "-m", email,
+           "--cert-name", primary, "--expand", *challenge]
     for d in domains:
         cmd += ["-d", d]
     if dry_run:
         cmd.append("--dry-run")
+    if params.get("force"):           # renew even if not yet due
+        cmd.append("--force-renewal")
     extra = os.environ.get("CERTBOT_EXTRA")
     if extra:
         cmd += shlex.split(extra)
@@ -630,7 +637,6 @@ def _action_cert_issue(params: dict) -> tuple[bool, str]:
         return True, "dry-run succeeded (no cert issued):\n" + out[-800:]
 
     # assemble the HAProxy pem (cert chain + private key)
-    primary = domains[0]
     live = f"/etc/letsencrypt/live/{primary}"
     try:
         chain = open(f"{live}/fullchain.pem").read()

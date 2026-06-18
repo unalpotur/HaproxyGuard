@@ -64,6 +64,7 @@ export default function ClusterPanel({ config, onConfigChange }: { config: strin
   const [cEmail, setCEmail] = useState('')
   const [cPem, setCPem] = useState('')
   const [cDry, setCDry] = useState(true)
+  const [cForce, setCForce] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -150,7 +151,7 @@ export default function ClusterPanel({ config, onConfigChange }: { config: strin
     if (!cDomains.trim() || !cEmail.trim()) throw new Error('domain(s) and email required')
     await nodeAction(n.id, 'cert-issue', {
       domains: cDomains.trim(), email: cEmail.trim(),
-      dry_run: cDry, pem_path: cPem.trim() || undefined,
+      dry_run: cDry, force: cForce, pem_path: cPem.trim() || undefined,
     })
     setNotice(`cert-issue (${cDry ? 'dry-run' : 'GERÇEK'}) queued for ${cDomains} — sonuç bir sonraki heartbeat'te`)
   })
@@ -296,7 +297,8 @@ export default function ClusterPanel({ config, onConfigChange }: { config: strin
                   <CertView node={n} onIssue={() => issueCert(n)}
                     domains={cDomains} setDomains={setCDomains}
                     email={cEmail} setEmail={setCEmail}
-                    pem={cPem} setPem={setCPem} dry={cDry} setDry={setCDry} />
+                    pem={cPem} setPem={setCPem} dry={cDry} setDry={setCDry}
+                    force={cForce} setForce={setCForce} />
                 </td></tr>
               )}
               </Fragment>
@@ -315,6 +317,7 @@ type CertViewProps = {
   email: string; setEmail: (v: string) => void
   pem: string; setPem: (v: string) => void
   dry: boolean; setDry: (v: boolean) => void
+  force: boolean; setForce: (v: boolean) => void
 }
 
 function CertView(p: CertViewProps) {
@@ -357,8 +360,8 @@ function CertView(p: CertViewProps) {
       <div className="cert-issue-form">
         <h5>Let's Encrypt ile sertifika al / yenile</h5>
         <div className="field-grid">
-          <label className="fld"><span>Domain(ler)</span>
-            <input placeholder="demo.nevalabs.com,www.demo.nevalabs.com"
+          <label className="fld"><span>Domain</span>
+            <input placeholder="demo.nevalabs.com"
               value={p.domains} onChange={(e) => p.setDomains(e.target.value)} /></label>
           <label className="fld"><span>E-posta</span>
             <input placeholder="ops@nevalabs.com" value={p.email}
@@ -372,15 +375,20 @@ function CertView(p: CertViewProps) {
             <input type="checkbox" checked={p.dry} onChange={(e) => p.setDry(e.target.checked)} />
             <span>Önce test et (dry-run) — sertifika almadan ACME akışını dener</span>
           </label>
+          <label className="chk">
+            <input type="checkbox" checked={p.force} onChange={(e) => p.setForce(e.target.checked)} />
+            <span>Zorla yenile (süresi dolmamış olsa da)</span>
+          </label>
           <button className={p.dry ? '' : 'primary'} onClick={p.onIssue}>
             {p.dry ? 'Dry-run dene' : 'Sertifikayı al (gerçek)'}
           </button>
         </div>
         <small className="cert-hint">
-          certbot hedef node'da kurulu olmalı. HAProxy :80'i tuttuğu için challenge yöntemi
-          ayarlanmalı (webroot için <code>CERTBOT_WEBROOT</code> ya da
-          <code>/.well-known/acme-challenge/</code>'ı <code>CERTBOT_HTTP_PORT</code>'a yönlendir).
-          Başarılıysa agent fullchain+key'i .pem'e yazıp HAProxy'yi reload eder.
+          Her sertifika ayrı bir <code>.pem</code> ise <strong>tek seferde tek domain</strong> gir
+          (birden çok domain = tek SAN sertifikası). Boş bırakırsan <code>.pem</code> hedefi
+          <code>CERT_DIR/&lt;domain&gt;.pem</code> olur — 121 gibi <code>/etc/ssl</code> kullanan
+          kurulumlarda hedef yolu elle ver. certbot node'da kurulu ve challenge yönlendirmesi
+          ayarlı olmalı. Başarılıysa agent fullchain+key'i .pem'e yazıp HAProxy'yi reload eder.
         </small>
       </div>
     </div>
