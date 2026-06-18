@@ -471,5 +471,14 @@ export const agentHeartbeat = (nodeId: string, token: string, body: unknown) =>
     body: JSON.stringify(body),
   }).then((r) => { if (!r.ok) throw new Error(`heartbeat failed: ${r.status}`); return r.json() })
 
-export const nodeAction = (nodeId: string, actionType: string, params: Record<string, string> = {}) =>
-  postJson<{ type: string; params: Record<string, string> }>(`/api/cluster/nodes/${nodeId}/action`, { type: actionType, params })
+export const nodeAction = (nodeId: string, actionType: string, params: Record<string, unknown> = {}) =>
+  postJson<{ type: string; params: Record<string, unknown> }>(`/api/cluster/nodes/${nodeId}/action`, { type: actionType, params })
+
+export interface NodeCert {
+  path: string
+  subject_cn: string
+  issuer_cn: string
+  not_after: string
+  days_remaining: number | null
+  sans: string[]
+}

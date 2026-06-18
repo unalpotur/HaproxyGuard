@@ -139,3 +139,25 @@ def test_main_accepts_minimal_env():
                 agent.main()
             except StopIteration:
                 pass  # expected — loop exits cleanly
+
+
+def test_parse_cert_openssl_days_and_san():
+    from datetime import datetime, timezone
+    info = agent.parse_cert_openssl(
+        "CN = demo.nevalabs.com",
+        "C = US, O = Let's Encrypt, CN = E7",
+        "Aug  5 12:00:00 2026 GMT",
+        "X509v3 Subject Alternative Name:\n    DNS:demo.nevalabs.com, DNS:www.demo.nevalabs.com",
+        now=datetime(2026, 6, 18, tzinfo=timezone.utc),
+    )
+    assert info["subject_cn"] == "demo.nevalabs.com"
+    assert info["issuer_cn"] == "E7"
+    assert info["not_after"] == "2026-08-05"
+    assert info["days_remaining"] == 48
+    assert info["sans"] == ["demo.nevalabs.com", "www.demo.nevalabs.com"]
+
+
+def test_parse_cert_openssl_bad_date_is_safe():
+    info = agent.parse_cert_openssl("CN = x", "CN = y", "not a date")
+    assert info["days_remaining"] is None
+    assert info["subject_cn"] == "x"

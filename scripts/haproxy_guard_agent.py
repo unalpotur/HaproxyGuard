@@ -49,6 +49,7 @@ import json
 import os
 import re
 import shlex
+from datetime import datetime, timezone
 import shutil
 import socket
 import subprocess
@@ -58,7 +59,7 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = os.environ.get("AGENT_VERSION", "2.3.0")
+AGENT_VERSION = os.environ.get("AGENT_VERSION", "2.4.0")
 _VERSION_RE = re.compile(r"HAProxy version (\S+)")
 _STATE_FILE = os.path.join(os.path.expanduser("~"), ".haproxy-guard-agent", "state.json")
 
@@ -498,20 +499,163 @@ def _action_config_bundle(params: dict | None = None) -> tuple[bool, str]:
     return True, base64.b64encode(json.dumps(bundle).encode()).decode()
 
 
-def _action_cert_list() -> tuple[bool, str]:
-    cert_dir = os.environ.get("CERT_DIR", "/etc/haproxy/certs")
+def _cn_from(dn: str) -> str:
+    """Pull the CN out of an openssl-printed distinguished name."""
+    m = re.search(r"CN\s*=\s*([^,/\n]+)", dn)
+    return m.group(1).strip() if m else dn.strip()
+
+
+def parse_cert_openssl(subject: str, issuer: str, not_after: str,
+                       sans: str = "", now: datetime | None = None) -> dict:
+    """Pure: turn `openssl x509` text into a structured cert summary."""
+    now = now or datetime.now(timezone.utc)
+    days = None
+    iso = not_after
     try:
-        if not os.path.isdir(cert_dir):
-            return True, json.dumps([])
-        files = sorted(os.listdir(cert_dir))
-        result = []
-        for name in files:
-            fpath = os.path.join(cert_dir, name)
-            if os.path.isfile(fpath):
-                result.append({"name": name, "size": os.path.getsize(fpath)})
-        return True, json.dumps(result)
+        na = datetime.strptime(" ".join(not_after.split()),
+                               "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+        days = (na - now).days
+        iso = na.date().isoformat()
+    except ValueError:
+        pass
+    san_list = re.findall(r"DNS:([^,\s]+)", sans)
+    return {
+        "subject_cn": _cn_from(subject),
+        "issuer_cn": _cn_from(issuer),
+        "not_after": iso,
+        "days_remaining": days,
+        "sans": san_list,
+    }
+
+
+def _inspect_cert(path: str, now: datetime) -> dict | None:
+    code, out = _run(["openssl", "x509", "-in", path, "-noout",
+                      "-subject", "-issuer", "-enddate"], timeout=10)
+    if code != 0:
+        return None  # not a certificate (e.g. a map file or key-only)
+    fields = {"subject": "", "issuer": "", "notAfter": ""}
+    for line in out.splitlines():
+        for k in fields:
+            if line.startswith(k + "="):
+                fields[k] = line.split("=", 1)[1].strip()
+    sc, so = _run(["openssl", "x509", "-in", path, "-noout", "-ext", "subjectAltName"], timeout=10)
+    info = parse_cert_openssl(fields["subject"], fields["issuer"], fields["notAfter"],
+                              so if sc == 0 else "", now)
+    info["path"] = path
+    return info
+
+
+def _action_cert_list() -> tuple[bool, str]:
+    """Report every certificate referenced by the config or sitting in CERT_DIR,
+    parsed via `openssl x509` (expiry, CN, SANs). Private keys never leave the
+    host — only certificate metadata is returned."""
+    now = datetime.now(timezone.utc)
+    candidates: set[str] = set()
+    # certs referenced by the live config (crt / crt-list / ca-file …)
+    cfg_path = os.environ.get("HAPROXY_CFG", "/etc/haproxy/haproxy.cfg")
+    try:
+        cfg = open(cfg_path).read()
+        for ref in _extract_file_refs(cfg):
+            if os.path.isdir(ref):
+                for f in os.listdir(ref):
+                    candidates.add(os.path.join(ref, f))
+            elif os.path.isfile(ref):
+                candidates.add(ref)
+    except OSError:
+        pass
+    # certs sitting in the managed cert dir
+    cert_dir = os.environ.get("CERT_DIR", "/etc/haproxy/certs")
+    if os.path.isdir(cert_dir):
+        for name in os.listdir(cert_dir):
+            fp = os.path.join(cert_dir, name)
+            if os.path.isfile(fp):
+                candidates.add(fp)
+    result = []
+    for path in sorted(candidates):
+        info = _inspect_cert(path, now)
+        if info:
+            result.append(info)
+    return True, json.dumps(result)
+
+
+_DOMAIN_RE = re.compile(r"^[A-Za-z0-9*][A-Za-z0-9.*-]{0,253}$")
+
+
+def _action_cert_issue(params: dict) -> tuple[bool, str]:
+    """Obtain/renew a Let's Encrypt cert with certbot, assemble the HAProxy
+    .pem (cert+key) and reload. dry_run (default True) exercises the ACME flow
+    without issuing — flip it off to really obtain the certificate.
+
+    params: domains (list or comma str), email, dry_run, pem_path, webroot
+    Challenge method: --webroot if CERTBOT_WEBROOT / webroot param is set,
+    else --standalone --http-01-port CERTBOT_HTTP_PORT (default 8888); the host
+    must route /.well-known/acme-challenge/ to that port. Override the whole
+    flow with CERTBOT_EXTRA.
+    """
+    certbot = shutil.which("certbot")
+    if not certbot:
+        return False, "certbot is not installed on this host"
+    raw = params.get("domains") or ""
+    domains = raw if isinstance(raw, list) else [d.strip() for d in str(raw).split(",")]
+    domains = [d for d in domains if d]
+    if not domains or not all(_DOMAIN_RE.match(d) for d in domains):
+        return False, f"invalid or missing domains: {domains}"
+    email = str(params.get("email", "")).strip()
+    if "@" not in email:
+        return False, "a valid email is required for Let's Encrypt"
+    dry_run = bool(params.get("dry_run", True))
+
+    webroot = params.get("webroot") or os.environ.get("CERTBOT_WEBROOT")
+    if webroot:
+        challenge = ["--webroot", "-w", str(webroot)]
+    else:
+        challenge = ["--standalone", "--http-01-port",
+                     os.environ.get("CERTBOT_HTTP_PORT", "8888")]
+    cmd = [certbot, "certonly", "-n", "--agree-tos", "-m", email, *challenge]
+    for d in domains:
+        cmd += ["-d", d]
+    if dry_run:
+        cmd.append("--dry-run")
+    extra = os.environ.get("CERTBOT_EXTRA")
+    if extra:
+        cmd += shlex.split(extra)
+
+    code, out = _run(cmd, timeout=180)
+    if code != 0:
+        return False, "certbot failed:\n" + out[-1500:]
+    if dry_run:
+        return True, "dry-run succeeded (no cert issued):\n" + out[-800:]
+
+    # assemble the HAProxy pem (cert chain + private key)
+    primary = domains[0]
+    live = f"/etc/letsencrypt/live/{primary}"
+    try:
+        chain = open(f"{live}/fullchain.pem").read()
+        key = open(f"{live}/privkey.pem").read()
     except OSError as e:
-        return False, str(e)
+        return False, f"certbot succeeded but reading {live} failed: {e}"
+    target = params.get("pem_path") or os.path.join(
+        os.environ.get("CERT_DIR", "/etc/haproxy/certs"), f"{primary}.pem")
+    if not _is_allowed(target):
+        return False, f"refusing to write outside allowed roots: {target}"
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        if os.path.exists(target):
+            shutil.copy2(target, target + ".guard.bak")
+        with open(target, "w") as f:
+            f.write(chain.rstrip("\n") + "\n" + key)
+        os.chmod(target, 0o600)
+    except OSError as e:
+        return False, f"failed to write {target}: {e}"
+
+    # reload so HAProxy serves the new cert
+    if _MODE == "docker":
+        rok, rmsg = run_action_fn(["docker", "kill", "-s", "HUP", _CONTAINER or "haproxy"])
+    else:
+        rok, rmsg = run_action_fn(
+            shlex.split(os.environ.get("RELOAD_CMD", "systemctl reload haproxy")))
+    status = "reloaded" if rok else f"WROTE cert but reload failed: {rmsg}"
+    return rok, f"issued cert for {', '.join(domains)} → {target}; {status}"
 
 
 def _action_cert_upload(params: dict) -> tuple[bool, str]:
@@ -561,7 +705,10 @@ _ACTIONS = {
     "cert-list": _action_cert_list,
     "cert-upload": _action_cert_upload,
     "cert-delete": _action_cert_delete,
+    "cert-issue": _action_cert_issue,
 }
+
+_PARAM_ACTIONS = ("cert-upload", "cert-delete", "cert-issue")
 
 
 def handle_action(action: dict | None) -> dict | None:
@@ -572,11 +719,11 @@ def handle_action(action: dict | None) -> dict | None:
     handler = _ACTIONS.get(action_type)
     if handler is None:
         return {"type": action_type, "ok": False, "error": f"unknown action: {action_type}"}
-    if action_type in ("cert-upload", "cert-delete"):
+    if action_type in _PARAM_ACTIONS:
         ok, msg = handler(params)
     else:
         ok, msg = handler()
-    return {"type": action_type, "ok": ok, "error" if not ok else "output": msg}
+    return {"type": action_type, "ok": ok, "error" if not ok else "output": msg, "_ts": time.time()}
 
 
 # ── heartbeat HTTP helper ────────────────────────────────────────────────
@@ -702,21 +849,21 @@ def main() -> int:
 
         elif decision == "apply":
             desired = reply["desired_config"]
-            # Write referenced files (certs/maps/errorfiles) first so that
-            # `haproxy -c` validation can open them.
-            write_aux_files(reply.get("desired_files"))
-            ok, msg = validate_fn(desired)
-            if not ok:
-                print(f"[agent] desired config failed validation, "
-                      f"keeping current: {msg}", file=sys.stderr)
+            if desired is None:
+                print("[agent] desired_config is None, skipping apply", file=sys.stderr)
             else:
-                ok, msg = apply_config_fn(desired, cfg_path, reload_cmd)
-                if ok:
-                    current_content = desired
-                    current_version = reply["desired_version"]
-                    print(f"[agent] {msg}; now at version {current_version}")
+                ok, msg = validate_fn(desired)
+                if not ok:
+                    print(f"[agent] desired config failed validation, "
+                          f"keeping current: {msg}", file=sys.stderr)
                 else:
-                    print(f"[agent] {msg}", file=sys.stderr)
+                    ok, msg = apply_config_fn(desired, cfg_path, reload_cmd)
+                    if ok:
+                        current_content = desired
+                        current_version = reply["desired_version"]
+                        print(f"[agent] {msg}; now at version {current_version}")
+                    else:
+                        print(f"[agent] {msg}", file=sys.stderr)
 
         time.sleep(interval)
 

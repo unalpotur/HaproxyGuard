@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState, type CSSProperties } from 'react'
+import { Fragment, useCallback, useEffect, useState, type CSSProperties } from 'react'
 import {
   clusterNodes, clusterOverview, clusterEnroll, clusterDeploy, clusterDeployCheck,
   clusterRollback, clusterRemove, agentHeartbeat, nodeAction,
-  type ClusterNode, type ClusterOverview,
+  type ClusterNode, type ClusterOverview, type NodeCert,
 } from './api'
 
 const shortPath = (p: string) => p.split('/').pop() || p
@@ -12,6 +12,20 @@ const STATUS_COLOR: Record<string, string> = {
 }
 const SVC_COLOR: Record<string, string> = {
   running: '#16a34a', stopped: '#ef4444', unknown: '#64748b',
+}
+
+// Days-remaining → colour and label, matching the SSL manager thresholds.
+const certColor = (d: number | null) =>
+  d == null ? '#64748b' : d < 0 || d <= 7 ? '#dc2626' : d <= 30 ? '#ea580c' : '#16a34a'
+const certLabel = (d: number | null) =>
+  d == null ? '?' : d < 0 ? `${-d} gün önce doldu` : `${d} gün`
+
+// Pull the cert-list result out of a node's last_action_result (if fresh).
+function nodeCerts(n: ClusterNode): NodeCert[] | null {
+  const r = n.last_action_result
+  if (!r || r.type !== 'cert-list') return null
+  if (!r.ok) return null
+  try { return JSON.parse(r.output as string) as NodeCert[] } catch { return null }
 }
 
 function parseLabels(s: string): Record<string, string> {
@@ -44,6 +58,12 @@ export default function ClusterPanel({ config, onConfigChange }: { config: strin
   // Auxiliary files (certs/maps/errorfiles) captured with the last fetched
   // config, shipped alongside it on the next deploy. path -> base64.
   const [bundleFiles, setBundleFiles] = useState<Record<string, string>>({})
+  // Per-node certificate panel: which node is expanded + the issue-cert form.
+  const [certFor, setCertFor] = useState<string | null>(null)
+  const [cDomains, setCDomains] = useState('')
+  const [cEmail, setCEmail] = useState('')
+  const [cPem, setCPem] = useState('')
+  const [cDry, setCDry] = useState(true)
 
   const refresh = useCallback(async () => {
     try {
@@ -113,11 +133,27 @@ export default function ClusterPanel({ config, onConfigChange }: { config: strin
     })
   })
 
-  const act = (id: string, actionType: string, params?: Record<string, string>) =>
+  const act = (id: string, actionType: string, params?: Record<string, unknown>) =>
     guard(async () => {
       await nodeAction(id, actionType, params ?? {})
       setNotice(`Action '${actionType}' queued — executes on next agent heartbeat`)
     })
+
+  // Open the cert panel for a node and queue a cert-list refresh.
+  const openCerts = (n: ClusterNode) => {
+    setCertFor((cur) => (cur === n.id ? null : n.id))
+    if (certFor !== n.id) void act(n.id, 'cert-list')
+  }
+
+  // Queue a Let's Encrypt issue/renew. dry_run is a real boolean.
+  const issueCert = (n: ClusterNode) => guard(async () => {
+    if (!cDomains.trim() || !cEmail.trim()) throw new Error('domain(s) and email required')
+    await nodeAction(n.id, 'cert-issue', {
+      domains: cDomains.trim(), email: cEmail.trim(),
+      dry_run: cDry, pem_path: cPem.trim() || undefined,
+    })
+    setNotice(`cert-issue (${cDry ? 'dry-run' : 'GERÇEK'}) queued for ${cDomains} — sonuç bir sonraki heartbeat'te`)
+  })
 
   // Fetch the live config + its referenced files (certs/maps/errorfiles) from a
   // node into the editor. We queue the action and remember which node we asked
@@ -226,7 +262,8 @@ export default function ClusterPanel({ config, onConfigChange }: { config: strin
           <tbody>
             {nodes.length === 0 && <tr><td colSpan={8} className="empty">No nodes enrolled yet.</td></tr>}
             {nodes.map((n) => (
-              <tr key={n.id}>
+              <Fragment key={n.id}>
+              <tr>
                 <td><input type="checkbox" checked={selected.has(n.id)} onChange={() => toggle(n.id)} /></td>
                 <td>
                   <strong>{n.name}</strong>
@@ -246,6 +283,7 @@ export default function ClusterPanel({ config, onConfigChange }: { config: strin
                     <button className="ico stop" onClick={() => act(n.id, 'stop')} title="Stop HAProxy">■</button>
                     <button className="ico start" onClick={() => act(n.id, 'start')} title="Start HAProxy">▶</button>
                   </span>
+                  <button className={`ico${certFor === n.id ? ' on' : ''}`} onClick={() => openCerts(n)} title="Sertifikalar (süre + Let's Encrypt)">🔐</button>
                   <button className="ico fetch" onClick={() => fetchConfig(n)} title="Fetch HAProxy config into the editor">📋</button>
                   {import.meta.env.DEV && tokens[n.id] &&
                     <button className="ico" onClick={() => checkIn(n.id)} title="DEV ONLY: simulate an agent heartbeat with fake version info">sim</button>}
@@ -253,9 +291,97 @@ export default function ClusterPanel({ config, onConfigChange }: { config: strin
                   <button className="ico danger" onClick={() => guard(() => clusterRemove(n.id))} title="Remove node">✕</button>
                 </td>
               </tr>
+              {certFor === n.id && (
+                <tr className="cert-row"><td colSpan={8}>
+                  <CertView node={n} onIssue={() => issueCert(n)}
+                    domains={cDomains} setDomains={setCDomains}
+                    email={cEmail} setEmail={setCEmail}
+                    pem={cPem} setPem={setCPem} dry={cDry} setDry={setCDry} />
+                </td></tr>
+              )}
+              </Fragment>
             ))}
           </tbody>
         </table>
+      </div>
+    </div>
+  )
+}
+
+type CertViewProps = {
+  node: ClusterNode
+  onIssue: () => void
+  domains: string; setDomains: (v: string) => void
+  email: string; setEmail: (v: string) => void
+  pem: string; setPem: (v: string) => void
+  dry: boolean; setDry: (v: boolean) => void
+}
+
+function CertView(p: CertViewProps) {
+  const certs = nodeCerts(p.node)
+  const r = p.node.last_action_result
+  const failed = r && r.type === 'cert-list' && !r.ok
+  const issueResult = r && r.type === 'cert-issue' ? r : null
+
+  return (
+    <div className="cert-view">
+      <h4>🔐 {p.node.name} — sertifikalar</h4>
+      {issueResult && (
+        <p className={issueResult.ok ? 'notice' : 'error'}>
+          cert-issue {issueResult.ok ? '✓' : '✗'}: {String(issueResult.output ?? issueResult.error ?? '')}
+        </p>
+      )}
+      {failed && <p className="error">cert-list başarısız: {String(r!.error ?? '')}</p>}
+      {!certs && !failed && <p className="empty">Sertifika listesi bekleniyor — agent'ın bir sonraki heartbeat'inde gelir (~10 sn). Agent ≥ 2.4.0 olmalı.</p>}
+
+      {certs && certs.length > 0 && (
+        <table className="cert-table">
+          <thead><tr><th>Domain</th><th>SAN</th><th>Veren (issuer)</th><th>Bitiş</th><th>Kalan</th><th>Dosya</th></tr></thead>
+          <tbody>
+            {certs.map((c) => (
+              <tr key={c.path}>
+                <td><strong>{c.subject_cn}</strong></td>
+                <td><small>{c.sans.join(', ') || '—'}</small></td>
+                <td>{c.issuer_cn}</td>
+                <td>{c.not_after}</td>
+                <td><span className="badge" style={{ '--dot': certColor(c.days_remaining) } as CSSProperties}>
+                  {certLabel(c.days_remaining)}</span></td>
+                <td><code>{shortPath(c.path)}</code></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {certs && certs.length === 0 && <p className="empty">Bu node'da sertifika bulunamadı.</p>}
+
+      <div className="cert-issue-form">
+        <h5>Let's Encrypt ile sertifika al / yenile</h5>
+        <div className="field-grid">
+          <label className="fld"><span>Domain(ler)</span>
+            <input placeholder="demo.nevalabs.com,www.demo.nevalabs.com"
+              value={p.domains} onChange={(e) => p.setDomains(e.target.value)} /></label>
+          <label className="fld"><span>E-posta</span>
+            <input placeholder="ops@nevalabs.com" value={p.email}
+              onChange={(e) => p.setEmail(e.target.value)} /></label>
+          <label className="fld"><span>Hedef .pem (ops.)</span>
+            <input placeholder="/etc/ssl/demo.nevalabs.com.pem" value={p.pem}
+              onChange={(e) => p.setPem(e.target.value)} /></label>
+        </div>
+        <div className="cert-issue-foot">
+          <label className="chk">
+            <input type="checkbox" checked={p.dry} onChange={(e) => p.setDry(e.target.checked)} />
+            <span>Önce test et (dry-run) — sertifika almadan ACME akışını dener</span>
+          </label>
+          <button className={p.dry ? '' : 'primary'} onClick={p.onIssue}>
+            {p.dry ? 'Dry-run dene' : 'Sertifikayı al (gerçek)'}
+          </button>
+        </div>
+        <small className="cert-hint">
+          certbot hedef node'da kurulu olmalı. HAProxy :80'i tuttuğu için challenge yöntemi
+          ayarlanmalı (webroot için <code>CERTBOT_WEBROOT</code> ya da
+          <code>/.well-known/acme-challenge/</code>'ı <code>CERTBOT_HTTP_PORT</code>'a yönlendir).
+          Başarılıysa agent fullchain+key'i .pem'e yazıp HAProxy'yi reload eder.
+        </small>
       </div>
     </div>
   )
